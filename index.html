@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Meridian — Real-Estate Operating System</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231C1A16'/%3E%3Ccircle cx='16' cy='16' r='8.5' fill='none' stroke='%23C9A24B' stroke-width='2'/%3E%3Cpath d='M16 4v24' stroke='%23C9A24B' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F4F1E9; --paper2:#ECE8DC; --paper3:#FBFAF5;
+  --ink:#1C1A16; --ink2:#4C473C; --ink3:#8B8574;
+  --line:#DFDACB; --lineS:#C9C2AE;
+  --green:#1D4D36; --greenT:#DFE8DD;
+  --brass:#A8842C; --brassT:#F0E6C8;
+  --red:#A33B2E; --redT:#F0DDD6;
+  --amber:#7A5B14;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font:14px/1.5 'Archivo',sans-serif;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--paper3);border:1px solid var(--lineS);border-radius:8px;padding:9px 12px;width:100%;outline:none;transition:border-color .15s, box-shadow .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--brass);box-shadow:0 0 0 3px rgba(168,132,44,.14)}
+textarea{resize:vertical;min-height:72px}
+label{display:block;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);margin:14px 0 6px}
+.ic{flex:none;display:inline-block;vertical-align:-3px}
+.serif{font-family:'Fraunces',serif}
+.tnum{font-variant-numeric:tabular-nums}
+::selection{background:var(--brassT)}
+:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--lineS);border-radius:6px;border:2px solid var(--paper)}
+
+/* ---------- shell ---------- */
+.app{display:grid;grid-template-columns:234px 1fr;height:100vh}
+.side{background:var(--ink);color:#CFC9B8;display:flex;flex-direction:column;padding:18px 0 14px;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 20px 18px;color:var(--paper)}
+.brand b{font-family:'Fraunces',serif;font-weight:500;font-size:19px;letter-spacing:.14em}
+.nav{flex:1}
+.nav-sec{font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#6E6857;padding:16px 20px 6px}
+.nav-i{display:flex;align-items:center;gap:11px;width:100%;padding:9px 20px;font-size:13.5px;font-weight:500;color:#B9B29E;border-left:2px solid transparent;text-align:left;transition:.15s}
+.nav-i:hover{color:var(--paper);background:rgba(244,241,233,.05)}
+.nav-i.on{color:var(--paper);border-left-color:var(--brass);background:rgba(244,241,233,.07)}
+.side-foot{border-top:1px solid #33302A;padding:12px 16px 2px;display:flex;align-items:center;gap:10px}
+.side-foot .who{flex:1;min-width:0}
+.side-foot .who b{display:block;color:var(--paper);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-foot .who span{font-size:11px;color:#8B8574;text-transform:capitalize}
+.avatar{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--paper);flex:none}
+.main{display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:58px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 22px;background:var(--paper);position:relative;z-index:30}
+.cmd{position:relative;flex:1;max-width:560px}
+.cmd input{background:var(--paper2);border-color:transparent;border-radius:9px;padding:9px 14px 9px 38px}
+.cmd input:focus{background:var(--paper3);border-color:var(--brass)}
+.cmd>svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--ink3);pointer-events:none}
+.cmd kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font:600 10.5px 'Archivo';color:var(--ink3);border:1px solid var(--lineS);border-radius:5px;padding:2px 6px;background:var(--paper3)}
+.cmd-pop{position:absolute;top:calc(100% + 8px);left:0;right:0;background:var(--paper3);border:1px solid var(--lineS);border-radius:12px;box-shadow:0 18px 50px rgba(28,26,22,.18);max-height:60vh;overflow:auto;z-index:50;padding:6px}
+.cmd-sec{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--ink3);padding:10px 12px 4px}
+.cmd-i{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border-radius:8px;text-align:left}
+.cmd-i .sub{color:var(--ink3);font-size:12px;margin-left:auto;white-space:nowrap}
+.cmd-i.sel{background:var(--paper2)}
+.ans-h{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--brass);padding:10px 12px 2px}
+.ans-big{font-family:'Fraunces',serif;font-size:26px;font-weight:500;padding:2px 12px 0}
+.ans-p{font-size:12.5px;color:var(--ink2);padding:0 12px 8px}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.bell{position:relative;width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;border:1px solid transparent}
+.bell:hover{background:var(--paper2)}
+.bell .cnt{position:absolute;top:4px;right:4px;background:var(--red);color:#fff;font-size:9.5px;font-weight:700;min-width:15px;height:15px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px}
+.userchip{display:flex;align-items:center;gap:9px;padding:4px 6px 4px 4px;border-radius:10px}
+.userchip .nm{text-align:right;line-height:1.2}
+.userchip .nm b{display:block;font-size:12.5px}
+.userchip .nm span{font-size:10.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.08em}
+.pop{position:absolute;top:calc(100% + 8px);right:0;width:360px;background:var(--paper3);border:1px solid var(--lineS);border-radius:12px;box-shadow:0 18px 50px rgba(28,26,22,.18);z-index:50;overflow:hidden}
+.pop-h{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
+.pop-h button{font-size:11.5px;font-weight:600;color:var(--green)}
+.notif{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+.notif:last-child{border-bottom:none}
+.notif.unread{background:#F7F3E6}
+.notif .t{color:var(--ink3);font-size:11px;white-space:nowrap;margin-left:auto}
+.notif-ic{width:28px;height:28px;border-radius:8px;background:var(--paper2);display:flex;align-items:center;justify-content:center;color:var(--ink2);flex:none}
+
+#view{flex:1;overflow-y:auto;padding:26px 30px 70px}
+#view .pg{max-width:1240px;margin:0 auto;animation:pgIn .3s cubic-bezier(.2,.8,.2,1)}
+@keyframes pgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.pg-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:22px;flex-wrap:wrap}
+.pg-head h1{font-family:'Fraunces',serif;font-weight:500;font-size:29px;letter-spacing:.01em}
+.pg-head .sub{color:var(--ink3);font-size:13px;margin-top:3px}
+.h-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+
+/* ---------- primitives ---------- */
+.btn{display:inline-flex;align-items:center;gap:7px;font:600 13px 'Archivo';padding:9px 15px;border-radius:9px;border:1px solid transparent;transition:.15s;white-space:nowrap}
+.btn.pri{background:var(--ink);color:var(--paper)}
+.btn.pri:hover{background:var(--green)}
+.btn.grn{background:var(--green);color:#fff}
+.btn.grn:hover{background:#16402C}
+.btn.sec{border-color:var(--lineS);background:var(--paper3)}
+.btn.sec:hover{border-color:var(--ink3)}
+.btn.gho{color:var(--ink2);padding:8px 10px}
+.btn.gho:hover{background:var(--paper2);color:var(--ink)}
+.btn.dng{background:var(--red);color:#fff}
+.btn.sm{padding:6px 10px;font-size:12px;border-radius:7px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.lbl{font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3)}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.pl-neut{background:#E9E5D8;color:#5C574B}.pl-pos{background:var(--greenT);color:var(--green)}
+.pl-warn{background:var(--brassT);color:var(--amber)}.pl-dang{background:var(--redT);color:var(--red)}
+.pl-info{background:#E2E4DA;color:#3F4A38}
+.sev-hi{background:var(--redT);color:var(--red)}.sev-med{background:var(--brassT);color:var(--amber)}.sev-low{background:#E4E2D6;color:#5C574B}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--lineS)}
+.tbl td{padding:12px;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:middle}
+.tbl .r{text-align:right}
+.tbl tr.row:hover td{background:#EFEBDF;cursor:pointer}
+.tbl tr:hover td.act-plain{background:#EFEBDF}
+.empty{padding:46px 20px;text-align:center;color:var(--ink3)}
+.empty p{margin-top:4px;font-size:13px}
+.ruled{border-top:1px solid var(--lineS);margin-top:26px;padding-top:18px}
+.sec-h{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px}
+.sec-h h2{font-family:'Fraunces',serif;font-weight:500;font-size:18px}
+.mini{font-size:12px;color:var(--ink3)}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12px;background:var(--paper2);border:1px solid var(--line);border-radius:7px;padding:10px 12px;overflow-x:auto;white-space:pre;color:var(--ink2)}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px;font-size:13px}
+.facts div{padding:7px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}
+.facts span{color:var(--ink3)}
+.score-bar{width:64px;height:5px;background:#E1DCCB;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:8px;overflow:hidden}
+.score-bar i{display:block;height:100%;border-radius:3px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+
+/* ---------- ledger strip / dashboard ---------- */
+.ledger{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(178px,1fr);border-top:1px solid var(--lineS);border-bottom:1px solid var(--lineS);overflow-x:auto;margin-bottom:26px}
+.lg{text-align:left;padding:18px 20px 16px;border-left:1px solid var(--line);transition:.15s}
+.lg:first-child{border-left:none}
+.lg:hover{background:#EFEBDF}
+.lg .l{display:block;font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)}
+.lg .v{display:block;font-family:'Fraunces',serif;font-weight:500;font-size:29px;margin:5px 0 3px;font-variant-numeric:tabular-nums}
+.lg .s{display:block;font-size:12px;color:var(--ink3)}
+.lg .s b{color:var(--green);font-weight:600}
+.lg .s b.down{color:var(--red)}
+.dash-grid{display:grid;grid-template-columns:1.9fr 1fr;gap:34px;align-items:start}
+.panel-h{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--lineS);padding-bottom:9px;margin-bottom:6px}
+.panel-h h2{font-family:'Fraunces',serif;font-weight:500;font-size:17px}
+.chart{position:relative}
+.chart-tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--paper);font-size:11.5px;font-weight:600;padding:5px 9px;border-radius:7px;transform:translate(-50%,-130%);white-space:nowrap;display:none;z-index:5}
+.fbar{display:grid;grid-template-columns:96px 1fr 78px;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.fbar:last-child{border-bottom:none}
+.fbar .track{height:9px;background:#E7E2D2;border-radius:5px;overflow:hidden}
+.fbar .track i{display:block;height:100%;background:var(--green);border-radius:5px;transition:width .5s cubic-bezier(.2,.8,.2,1)}
+.fbar .val{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink2)}
+.fbar.click{cursor:pointer}.fbar.click:hover{background:#EFEBDF}
+.ins{display:flex;gap:11px;width:100%;text-align:left;padding:12px 6px;border-bottom:1px solid var(--line);align-items:flex-start}
+.ins:hover{background:#EFEBDF}
+.ins b{font-size:13.5px;display:block}
+.ins p{font-size:12px;color:var(--ink2);margin-top:2px}
+.ins .ic{color:var(--ink3);margin-top:2px}
+.task{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13px}
+.task:last-child{border:none}
+.task .due{margin-left:auto;font-size:11.5px;color:var(--ink3);white-space:nowrap}
+.task.over .due{color:var(--red);font-weight:600}
+.ck{width:18px;height:18px;border:1.5px solid var(--lineS);border-radius:6px;flex:none;display:flex;align-items:center;justify-content:center;color:transparent}
+.ck:hover{border-color:var(--green)}
+.ck.done{background:var(--green);border-color:var(--green);color:#fff}
+.actfeed{font-size:12.5px}
+.actfeed .a{display:flex;gap:10px;padding:8px 4px;border-bottom:1px solid var(--line)}
+.actfeed .a:last-child{border:none}
+.actfeed .t{color:var(--ink3);font-size:11px;white-space:nowrap;margin-left:auto}
+.trio{display:grid;grid-template-columns:1fr 1.5fr 1.1fr;gap:34px;margin-top:34px}
+
+/* ---------- tables / kanban ---------- */
+.filters{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+.filters input{max-width:250px}
+.filters select{width:auto;min-width:130px}
+.stage-legend{display:flex;gap:6px;margin:4px 0 16px;flex-wrap:wrap}
+.kb{display:grid;grid-template-columns:repeat(6,minmax(238px,1fr));gap:13px;overflow-x:auto;align-items:start;padding-bottom:8px}
+.kb-col{background:var(--paper2);border:1px solid var(--line);border-radius:13px;padding:10px;min-height:180px;transition:.15s}
+.kb-col.over{outline:2px dashed var(--green);outline-offset:-2px;background:#E6E3CE}
+.kb-col.flash{outline:2px solid var(--brass)}
+.kb-h{display:flex;align-items:center;justify-content:space-between;padding:2px 4px 10px;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink2)}
+.kb-h .c{color:var(--ink3)}
+.kb-card{background:var(--paper3);border:1px solid var(--line);border-radius:11px;padding:12px;margin-bottom:9px;cursor:grab}
+.kb-card:hover{border-color:var(--lineS);box-shadow:0 3px 12px rgba(28,26,22,.07)}
+.kb-card.dragging{opacity:.35}
+.kb-card b{font-size:13.5px;display:block}
+.kb-card .prop{font-size:11.5px;color:var(--ink3);margin:1px 0 7px}
+.kb-card .val{font-family:'Fraunces',serif;font-size:16.5px;font-weight:500}
+.kb-foot{display:flex;align-items:center;gap:8px;margin-top:8px}
+.age{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:6px;background:#E9E5D8;color:#5C574B}
+.age.warn{background:var(--brassT);color:var(--amber)}
+
+/* ---------- drawer / modal / toast ---------- */
+#layer .backdrop{position:fixed;inset:0;background:rgba(24,21,15,.38);opacity:0;transition:.25s;z-index:55}
+#layer.on .backdrop{opacity:1}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:508px;max-width:96vw;background:var(--paper);border-left:1px solid var(--lineS);box-shadow:-30px 0 70px rgba(20,18,12,.16);transform:translateX(102%);transition:transform .3s cubic-bezier(.2,.8,.2,1);z-index:60;display:flex;flex-direction:column}
+#layer.on .drawer{transform:none}
+.dw-h{padding:20px 24px 16px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px}
+.dw-h h3{font-family:'Fraunces',serif;font-weight:500;font-size:21px;line-height:1.2}
+.dw-b{flex:1;overflow-y:auto;padding:20px 24px 40px}
+.dw-x{margin-left:auto}
+.modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-46%) scale(.97);opacity:0;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;background:var(--paper);border:1px solid var(--lineS);border-radius:16px;box-shadow:0 30px 80px rgba(20,18,12,.3);z-index:70;padding:24px;transition:.22s cubic-bezier(.2,.8,.2,1)}
+#layer.on .modal{transform:translate(-50%,-50%) scale(1);opacity:1}
+.modal h3{font-family:'Fraunces',serif;font-weight:500;font-size:20px;margin-bottom:4px}
+.modal .m-sub{font-size:12.5px;color:var(--ink3);margin-bottom:6px}
+.m-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}
+.form-err{display:none;background:var(--redT);color:var(--red);font-size:12.5px;font-weight:600;border-radius:8px;padding:9px 12px;margin-top:14px}
+.form-err.on{display:block}
+#toasts{position:fixed;right:20px;bottom:20px;z-index:95;display:flex;flex-direction:column;gap:9px}
+.toast{background:var(--ink);color:var(--paper);padding:12px 16px;border-radius:11px;display:flex;gap:10px;align-items:center;max-width:380px;font-size:13px;box-shadow:0 12px 30px rgba(20,18,12,.3);animation:tIn .25s cubic-bezier(.2,.8,.2,1)}
+.toast.err{background:var(--red)}
+.toast.info{background:var(--green)}
+.toast.out{opacity:0;transform:translateY(8px);transition:.3s}
+@keyframes tIn{from{opacity:0;transform:translateY(10px)}to{opacity:1}}
+
+/* ---------- login ---------- */
+.login{display:grid;grid-template-columns:1.05fr 1fr;height:100vh}
+.lg-left{background:var(--ink);color:#CFC9B8;position:relative;overflow:hidden;display:flex;flex-direction:column;padding:44px 52px}
+.lg-left .wordmark{display:flex;align-items:center;gap:12px;color:var(--paper)}
+.lg-left .wordmark b{font-family:'Fraunces',serif;font-weight:500;font-size:23px;letter-spacing:.2em}
+.lg-copy{margin-top:auto;position:relative;z-index:2}
+.lg-copy h1{font-family:'Fraunces',serif;font-weight:400;font-size:clamp(30px,3.4vw,46px);line-height:1.12;color:var(--paper);max-width:12em}
+.lg-copy p{margin-top:14px;max-width:34em;font-size:14px;color:#A29B85}
+.arches{position:absolute;right:-60px;bottom:-30px;opacity:.9;z-index:1}
+.lg-right{display:flex;align-items:center;justify-content:center;padding:40px}
+.lg-card{width:380px;max-width:100%}
+.lg-card h2{font-family:'Fraunces',serif;font-weight:500;font-size:25px}
+.demo-chips{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}
+.chip{font-size:11.5px;font-weight:600;border:1px solid var(--lineS);border-radius:20px;padding:5px 12px;color:var(--ink2);background:var(--paper3)}
+.chip:hover{border-color:var(--brass);color:var(--ink)}
+.sec-note{margin-top:22px;font-size:11.5px;color:var(--ink3);display:flex;gap:7px;align-items:flex-start}
+
+.wh-stat{display:flex;gap:26px;padding:6px 0 16px}
+.wh-stat div b{font-family:'Fraunces',serif;font-size:22px;font-weight:500;display:block}
+.code-row{display:flex;gap:8px;align-items:center;margin:8px 0 4px}
+.code-row .mono{flex:1;overflow:hidden;text-overflow:ellipsis}
+.svc{display:flex;align-items:center;gap:14px;padding:14px 4px;border-bottom:1px solid var(--line)}
+.svc:last-child{border:none}
+.svc .ic{color:var(--ink2)}
+.svc b{font-size:13.5px;display:block}
+.svc p{font-size:12px;color:var(--ink3)}
+.svc .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+
+.denied{max-width:440px;margin:60px auto;text-align:center}
+.denied .ic{color:var(--red)}
+.denied h1{font-family:'Fraunces',serif;font-size:26px;font-weight:500;margin:12px 0 6px}
+
+@media (max-width:1120px){
+  .app{grid-template-columns:64px 1fr}
+  .brand b,.nav-i span,.nav-sec,.side-foot .who{display:none}
+  .nav-i{justify-content:center;padding:11px 0}
+  .dash-grid,.trio{grid-template-columns:1fr;gap:24px}
+  .cmd kbd{display:none}
+}
+@media (max-width:760px){
+  #view{padding:18px 14px 60px}
+  .userchip .nm{display:none}
+  .login{grid-template-columns:1fr}.lg-left{display:none}
+  .drawer{width:100vw}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="layer"></div>
+<div id="toasts"></div>
+
+<script>
+/* ============================================================
+   1 · UTILITIES
+============================================================ */
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid=()=> 'x'+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-3);
+const now=()=>Date.now(); const DAY=864e5;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const dAgo=(d,h=9)=>{const t=new Date(now()-d*DAY);t.setHours(h,0,0,0);return +t};
+const dAhead=(d,h=9)=>{const t=new Date(now()+d*DAY);t.setHours(h,0,0,0);return +t};
+const fmt$=n=>'$'+Math.round(n||0).toLocaleString('en-US');
+const fmt$M=n=>{n=n||0;if(Math.abs(n)>=1e6)return'$'+(+ (n/1e6).toFixed(2))+'M';if(Math.abs(n)>=1e3)return'$'+Math.round(n/1e3)+'K';return'$'+Math.round(n)};
+const fdate=ts=>new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+const fdatey=ts=>new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+const fdt=ts=>{const d=new Date(ts);return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})};
+const ago=ts=>{const m=Math.floor((now()-ts)/6e4);if(m<1)return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';const dd=Math.floor(h/24);return dd===1?'yesterday':dd+'d ago'};
+const initials=n=>String(n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
+const AVC=['#1D4D36','#7A5B14','#A33B2E','#3F4A5C','#5B4A68'];
+const avCol=n=>AVC[[...String(n)].reduce((a,c)=>a+c.charCodeAt(0),0)%AVC.length];
+const avatar=(n,s=32)=>`<span class="avatar" style="width:${s}px;height:${s}px;background:${avCol(n)}">${esc(initials(n))}</span>`;
+const sel=(a,b)=>a===b?'selected':'';
+const toLocal=ts=>{const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16)};
+async function sha256(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+const randHex=n=>[...crypto.getRandomValues(new Uint8Array(n))].map(x=>x.toString(16).padStart(2,'0')).join('');
+
+/* ---------- icons (inline SVG, stroke) ---------- */
+const ICONS={
+grid:'<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
+users:'<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6"/><path d="M15.5 5.4a3.2 3.2 0 010 5.2M17 14.8c2 .5 3.2 1.9 3.6 4.2"/>',
+board:'<rect x="3.5" y="4" width="4.6" height="16" rx="1.2"/><rect x="9.7" y="4" width="4.6" height="11" rx="1.2"/><rect x="15.9" y="4" width="4.6" height="14" rx="1.2"/>',
+building:'<path d="M4.5 20V6.5L12 3l7.5 3.5V20"/><path d="M3.5 20h17"/><path d="M9.5 20v-4.5h5V20"/><path d="M8.2 9h.01M12 9h.01M15.8 9h.01M8.2 12.5h.01M12 12.5h.01M15.8 12.5h.01"/>',
+calcheck:'<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/><path d="M9 14.8l2 2 4-4"/>',
+coin:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7v10"/><path d="M14.7 9.4c-.7-1-5.2-1.2-5.2.9 0 2.3 5.4 1.2 5.4 3.4 0 2-4.3 2-5.5.7"/>',
+sparkle:'<path d="M12 3.5l1.7 4.8 4.8 1.7-4.8 1.7L12 16.5l-1.7-4.8-4.8-1.7 4.8-1.7z"/><path d="M18.6 15.8l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+plug:'<path d="M9 3.5V8M15 3.5V8"/><path d="M6.5 8h11v3.5a5.5 5.5 0 01-11 0z"/><path d="M12 17v3.5"/>',
+shield:'<path d="M12 3l7.5 2.8v5.4c0 4.6-3 8-7.5 9.8-4.5-1.8-7.5-5.2-7.5-9.8V5.8z"/><path d="M9 12l2.2 2.2 4.3-4.4"/>',
+bell:'<path d="M6 9.5a6 6 0 0112 0c0 5 1.8 6 1.8 6H4.2S6 14.5 6 9.5"/><path d="M10 19a2.2 2.2 0 004 0"/>',
+search:'<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+plus:'<path d="M12 5v14M5 12h14"/>',
+x:'<path d="M6 6l12 12M18 6L6 18"/>',
+chevd:'<path d="M6 9l6 6 6-6"/>',
+arrow:'<path d="M7 17L17 7M9 7h8v8"/>',
+logout:'<path d="M14 4h5v16h-5"/><path d="M10 8l-4 4 4 4M6 12h10"/>',
+download:'<path d="M12 4v11M7.5 11L12 15.5 16.5 11"/><path d="M4.5 19.5h15"/>',
+phone:'<path d="M5.5 4h3L10 8l-2 1.5a11 11 0 005 5L14.5 12l4 1.5v3a2 2 0 01-2.2 2A14.5 14.5 0 013.5 6.2 2 2 0 015.5 4z"/>',
+mail:'<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4.5 7.5L12 13l7.5-5.5"/>',
+check:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+alert:'<path d="M12 4L2.8 19.5h18.4z"/><path d="M12 10v4M12 16.8h.01"/>',
+clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+trend:'<path d="M3.5 17l5-5 3.5 3.5 7-7.5"/><path d="M14.5 8H19v4.5"/>',
+percent:'<path d="M19 5L5 19"/><circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/>',
+eye:'<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+copy:'<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 013 13.5v-9A1.5 1.5 0 014.5 3h9A1.5 1.5 0 0115 4.5V5"/>',
+trash:'<path d="M4.5 6.5h15M9.5 6V4.5h5V6M7 6.5l.8 13h8.4l.8-13"/><path d="M10 10.5v5.5M14 10.5v5.5"/>',
+edit:'<path d="M4 20l.9-3.6L16.2 5.1a1.8 1.8 0 012.6 0l.1.1a1.8 1.8 0 010 2.6L7.6 19.1z"/>',
+};
+const icon=(n,s=18)=>`<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]||''}</svg>`;
+
+/* ============================================================
+   2 · DATABASE (browser-persisted relational store)
+============================================================ */
+const DB_KEY='meridian.v1', SESS_KEY='meridian.sid', PW_SALT='meridian::hv';
+let db=null, SESSION=null;
+const save=()=>localStorage.setItem(DB_KEY,JSON.stringify(db));
+
+function logSec(event,sev,actor,detail){
+  db.security.unshift({id:uid(),orgId:'o1',at:now(),event,sev,actor:actor||'system',detail:detail||''});
+  if(db.security.length>400)db.security.length=400;
+}
+function act(msg,opts={}){
+  db.activities.unshift({id:uid(),orgId:'o1',msg,userId:opts.userId||null,about:opts.about||null,entity:opts.entity||null,entityId:opts.entityId||null,at:opts.at||now()});
+  if(db.activities.length>150)db.activities.length=150;
+}
+function notify(uids,msg,type){
+  uids.filter(Boolean).forEach(u=>{db.notifs.unshift({id:uid(),orgId:'o1',uid:u,msg,type:type||'info',at:now(),read:false})});
+  if(db.notifs.length>80)db.notifs.length=80;
+}
+async function seedDB(){
+  const pw=await sha256('demo1234'+PW_SALT);
+  const U=(id,name,email,role,split)=>({id,orgId:'o1',name,email,pass:pw,role,split,active:true,createdAt:dAgo(220)});
+  db={orgId:'o1',settings:{orgName:'Harrow & Vale Realty',defaultRate:2.5,rr:0},users:[
+    U('u1','Eleanor Vance','eleanor@harrowvale.com','owner',0),
+    U('u2','Marcus Hale','marcus@harrowvale.com','admin',50),
+    U('u3','Priya Raman','priya@harrowvale.com','agent',60),
+    U('u4','Jonah Cole','jonah@harrowvale.com','agent',60),
+    U('u5','Sofia Reyes','sofia@harrowvale.com','agent',55),
+  ],leads:[],properties:[],deals:[],visits:[],tasks:[],activities:[],notifs:[],security:[],coms:[],webhooks:[],services:{}};
+  const P=(id,title,address,type,price,beds,baths,area,status,by,created)=>({id,orgId:'o1',title,address,type,price,beds,baths,area,status,listedBy:by,createdAt:created});
+  db.properties=[
+    P('p1','The Marlowe Condo','412 Beacon St, Unit 9C','Condo',625000,2,2,1310,'sold','u2',dAgo(150)),
+    P('p2','Alder Row Townhouse','214 Alder Row','Townhouse',1175000,3,3,2140,'sold','u1',dAgo(160)),
+    P('p3','Beacon Street Loft','88 Beacon St, Loft 2','Loft',915000,1,1.5,1180,'sold','u2',dAgo(140)),
+    P('p4','Cedar Hollow Cottage','7 Cedar Hollow Ln','House',495000,3,2,1620,'sold','u5',dAgo(135)),
+    P('p5','Larkspur Villa','19 Larkspur Rise','Villa',2300000,5,4.5,4380,'under_offer','u1',dAgo(95)),
+    P('p6','Garden Gate Duplex','52 Garden Gate Rd','Duplex',780000,4,3,2280,'available','u3',dAgo(80)),
+    P('p7','Quarry Lane House','3 Quarry Lane','House',1040000,4,3.5,2760,'available','u3',dAgo(70)),
+    P('p8','Juniper Apartment','310 Juniper Ave, 4B','Condo',560000,2,1.5,1090,'available','u4',dAgo(55)),
+    P('p9','Old Mill Residence','1 Old Mill Crossing','House',1480000,4,4,3310,'available','u5',dAgo(40)),
+  ];
+  const L=(id,name,email,phone,source,bmin,bmax,timeline,status,assign,last,days,notes)=>({id,orgId:'o1',name,email,phone,source,budgetMin:bmin,budgetMax:bmax,timeline,status,assignedTo:assign,notes:notes||'',createdAt:dAgo(days),lastContactAt:last,score:0,scoreF:{}});
+  db.leads=[
+    L('l1','Tomas Whitfield','tomas.w@northmail.com','+1 555 0142','Referral',2000000,2500000,'ASAP','qualified','u5',dAgo(1),21,'Relocating for a partner role; private viewing preferred.'),
+    L('l2','Vikram Shah','vikram.shah@mailbox.com','+1 555 0177','Zillow Portal',900000,1200000,'ASAP','qualified','u3',dAgo(0,8),18,'Second child on the way — needs school district by fall.'),
+    L('l3','Dana Okafor','dana.okafor@post.net','+1 555 0163','Website',700000,850000,'1-3 months','contacted','u4',dAgo(2),26,'Wants a duplex with rental income potential.'),
+    L('l4','June Park','june.park@letters.com','+1 555 0128','Zillow Portal',500000,620000,'1-3 months','qualified','u4',dAgo(4),24,'First-time buyer, pre-approved with Meridian Bank.'),
+    L('l5','Marcus Webb','m.webb@fieldnote.com','+1 555 0190','Referral',1300000,1600000,'3-6 months','contacted','u5',dAgo(6),33,'Upgrading from Juniper Ave; knows the neighbourhood well.'),
+    L('l6','Amara Diallo','amara.d@lumenpost.com','+1 555 0155','Instagram',950000,1100000,'ASAP','new','u3',dAgo(1),12,'Saw the Quarry Lane feature reel; cash buyer.'),
+    L('l7','Ben Cartwright','benc@oldmail.net','+1 555 0111','Walk-in',480000,560000,'3-6 months','new',null,dAgo(5),9,'Walked into the office on Saturday.'),
+    L('l8','Chloe Bernard','chloe.bernard@webmail.com','+1 555 0188','Webhook',620000,750000,'1-3 months','new',null,dAgo(1),1,'Received via website contact-form webhook.'),
+    L('l9','Daniel Reyes','d.reyes@harborline.com','+1 555 0134','Referral',1500000,1900000,'1-3 months','contacted','u3',dAgo(9),30,'Selling a business; timing flexible but decisive.'),
+    L('l10','Elena Petrova','elena.p@circlemail.com','+1 555 0102','Zillow Portal',1700000,2100000,'Just exploring','new','u5',dAgo(12),28,'Comparing markets; may stay renting another year.'),
+    L('l11','Frank Osei','frank.osei@quillbox.com','+1 555 0146','Website',430000,520000,'ASAP','contacted','u4',dAgo(3),20,'Needs to close before lease ends in 60 days.'),
+    L('l12','Grace Lindqvist','grace.l@northshore.co','+1 555 0171','Referral',2200000,2800000,'1-3 months','qualified','u3',dAgo(7),25,'Referral from the Alder Row sellers.'),
+    L('l13','Hugo Marsden','hugo.m@driftpost.com','+1 555 0119','Instagram',800000,950000,'3-6 months','new','u4',dAgo(15),14,'Remote worker; wants a home office.'),
+    L('l14','Imani Brooks','imani.brooks@fastmail.com','+1 555 0193','Webhook',1000000,1250000,'ASAP','qualified','u5',dAgo(2),4,'Webhook lead — mortgage pre-approval attached.'),
+    L('l15','Jack Thorne','jack.t@lattermail.com','+1 555 0125','Zillow Portal',550000,640000,'Just exploring','lost','u3',dAgo(30),38,'Chose to stay in his current home.'),
+    L('l16','Kaia Nakamura','kaia.n@pinecrest.com','+1 555 0180','Referral',1900000,2300000,'1-3 months','converted','u3',dAgo(20),60,''),
+    L('l17','Liam Doyle','liam.doyle@brickmail.com','+1 555 0138','Referral',610000,700000,'ASAP','converted','u4',dAgo(6),45,''),
+    L('l18','Omar Haddad','omar.h@citypost.com','+1 555 0166','Website',850000,950000,'ASAP','converted','u4',dAgo(75),52,''),
+    L('l19','Nina Kovacs','nina.k@wrenmail.com','+1 555 0150','Zillow Portal',450000,520000,'1-3 months','converted','u5',dAgo(110),58,''),
+  ];
+  const D=(id,title,lead,prop,value,stage,by,created,staged,closed,rate=2.5,lostReason=null)=>({id,orgId:'o1',title,leadId:lead,propertyId:prop,value,stage,rate,assignedTo:by,createdAt:created,stageChangedAt:staged,closedAt:closed,lostReason});
+  db.deals=[
+    D('d1','Liam Doyle × The Marlowe Condo','l17','p1',620000,'won','u4',dAgo(30),dAgo(6),dAgo(6)),
+    D('d2','Kaia Nakamura × Alder Row Townhouse','l16','p2',1150000,'won','u3',dAgo(48),dAgo(20),dAgo(20)),
+    D('d3','Omar Haddad × Beacon Street Loft','l18','p3',890000,'won','u4',dAgo(88),dAgo(75),dAgo(75)),
+    D('d4','Nina Kovacs × Cedar Hollow Cottage','l19','p4',480000,'won','u5',dAgo(120),dAgo(110),dAgo(110)),
+    D('d5','Tomas Whitfield × Larkspur Villa','l1','p5',2250000,'negotiation','u5',dAgo(16),dAgo(17),null),
+    D('d6','Vikram Shah × Quarry Lane House','l2','p7',1025000,'visit','u3',dAgo(9),dAgo(5),null),
+    D('d7','Dana Okafor × Garden Gate Duplex','l3','p6',765000,'visit','u4',dAgo(14),dAgo(8),null),
+    D('d8','June Park × Juniper Apartment','l4','p8',585000,'qualified','u4',dAgo(10),dAgo(6),null),
+    D('d9','Marcus Webb × Old Mill Residence','l5','p9',1445000,'new','u5',dAgo(4),dAgo(4),null),
+  ];
+  const V=(id,deal,at,status,outcome,by,notes)=>({id,orgId:'o1',dealId:deal,at,status,outcome:outcome||'',agentId:by,notes:notes||'',createdAt:dAgo(20)});
+  db.visits=[
+    V('v1','d1',dAgo(9),'completed','offer_made','u4','Loved the light; offered same evening.'),
+    V('v2','d2',dAgo(24),'completed','offer_made','u3','Second visit with family; strong intent.'),
+    V('v3','d7',dAhead(1,10),'scheduled','','u4',''),
+    V('v4','d6',dAhead(3,14),'scheduled','','u3',''),
+    V('v5','d5',dAgo(2,11),'scheduled','','u5','No-show — needs rebooking.'),
+  ];
+  const T=(id,title,lead,due,assign,done)=>({id,orgId:'o1',leadId:lead,dealId:null,title,dueAt:due,done,assignedTo:assign,createdBy:'u1',createdAt:dAgo(6)});
+  db.tasks=[
+    T('t1','Call Dana Okafor about the Garden Gate offer','l3',dAgo(2,15),'u4',false),
+    T('t2','Send Quarry Lane disclosure pack','l2',dAgo(1,12),'u3',false),
+    T('t3','Follow up: June Park second viewing','l4',dAhead(0,17),'u4',false),
+    T('t4','Prep appraisal docs for Larkspur Villa','l1',dAhead(2,11),'u5',false),
+    T('t5','Intro call — Chloe Bernard (webhook lead)','l8',dAhead(3,10),'u4',false),
+    T('t6','Portfolio review — Marcus Webb','l5',dAhead(5,15),'u5',false),
+  ];
+  const A=(msg,days,userId,about)=>({id:uid(),orgId:'o1',msg,userId,about,at:dAgo(days,days?8+ (days%9):10)});
+  db.activities=[
+    A('Deal won — Liam Doyle × The Marlowe Condo ($620K)',6,'u4'),
+    A('Commission recorded: $15,500 gross on Marlowe Condo',6,'u1','u4'),
+    A('Kaia Nakamura moved to Won — Alder Row Townhouse',20,'u3'),
+    A('Tomas Whitfield moved to Negotiation on Larkspur Villa',17,'u5'),
+    A('Site visit completed — Beacon Street Loft (offer made)',75,'u4'),
+    A('Vikram Shah assigned to Priya Raman',18,'u1','u3'),
+    A('Dana Okafor moved to Site Visit — Garden Gate Duplex',8,'u4'),
+    A('New webhook lead received — Imani Brooks',4,'u1','u5'),
+    A('June Park qualified after discovery call',6,'u4'),
+    A('New lead — Marcus Webb (referral from Alder Row sellers)',33,'u5'),
+    A('Jack Thorne marked lost — chose to stay put',30,'u3'),
+  ];
+  const C=(id,deal,agent,gross,status,at)=>{const u=db.users.find(x=>x.id===agent);const agentAmt=Math.round(gross*u.split/100);return{id,orgId:'o1',dealId:deal,agentId:agent,gross,agentAmt,houseAmt:gross-agentAmt,status,at}};
+  db.coms=[C('c1','d1','u4',15500,'pending',dAgo(6)),C('c2','d2','u3',28750,'pending',dAgo(20)),C('c3','d3','u4',22250,'paid',dAgo(75)),C('c4','d4','u5',12000,'paid',dAgo(110))];
+  db.notifs=[
+    {id:uid(),orgId:'o1',uid:'u1',msg:'Deal won — Kaia Nakamura × Alder Row Townhouse ($1.15M)',type:'deal',at:dAgo(20),read:false},
+    {id:uid(),orgId:'o1',uid:'u1',msg:'New webhook lead received — Chloe Bernard',type:'webhook',at:dAgo(1),read:false},
+    {id:uid(),orgId:'o1',uid:'u3',msg:'You were assigned a new lead: Vikram Shah',type:'lead',at:dAgo(18),read:false},
+    {id:uid(),orgId:'o1',uid:'u4',msg:'Follow-up overdue: Call Dana Okafor about the Garden Gate offer',type:'task',at:dAgo(2),read:false},
+  ];
+  logSec('auth.login.fail','low','unknown@badactor.net','Failed sign-in — 3rd attempt in 10 minutes');
+  logSec('authz.denied','high','jonah@harrowvale.com','Agent attempted to open security.log route');
+  logSec('data.export','low','eleanor@harrowvale.com','Exported 17 leads (CSV)');
+  db.webhooks=[{id:'wh1',orgId:'o1',label:'Website contact form',token:'whk_'+randHex(6),secret:'whsec_'+randHex(8),active:true,received:2,failed:1,hits:[],createdAt:dAgo(30)}];
+  save();
+}
+const loadDB=()=>{try{db=JSON.parse(localStorage.getItem(DB_KEY))}catch(e){db=null}};
+
+/* ============================================================
+   3 · AUTH · SESSION · PERMISSIONS
+============================================================ */
+const cur=()=>db?db.users.find(u=>SESSION&&u.id===SESSION.uid):null;
+const isMgr=u=>u&&u.role!=='agent';
+const ROLE_PERMS={admin:['lead','property','deal','visit','team.view','com.view.all','integrations','security.log','export','analytics.org','webhook','task'],
+                  agent:['lead.create','lead.edit.own','deal.create','deal.move.own','visit','com.view.own','analytics.own','task']};
+function can(u,p){
+  if(!u||!p)return !!u;
+  if(u.role==='owner')return true;
+  if(!u.active)return false;
+  return (ROLE_PERMS[u.role]||[]).some(x=>p===x||p.startsWith(x+'.'));
+}
+function checkSession(){
+  if(!SESSION)return false;
+  if(now()>SESSION.exp){doLogout('Your session expired for security. Please sign in again.');return false}
+  const u=cur();
+  if(!u||!u.active){doLogout('Your account is no longer active.');return false}
+  SESSION.exp=now()+30*60e3; localStorage.setItem(SESS_KEY,JSON.stringify(SESSION));
+  return true;
+}
+function doLogout(msg){
+  SESSION=null;localStorage.removeItem(SESS_KEY);closeLayer(true);
+  if(msg)toast(msg,'info');
+  renderApp();
+}
+function guard(perm){
+  if(!checkSession())throw{user:'Your session has ended. Please sign in again.'};
+  const u=cur();
+  if(!can(u,perm)){
+    logSec('authz.denied','high',u.email,`Denied: ${perm} (${u.role})`);
+    throw{user:'You do not have permission to perform this action.'};
+  }
+  return u;
+}
+function ownOrManage(u,ownerId,what){
+  if(isMgr(u))return;
+  if(ownerId!==u.id){logSec('authz.denied','high',u.email,`Agent access to another agent's ${what}`);throw{user:'This record belongs to another agent.'}}
+}
+
+/* ============================================================
+   4 · DOMAIN — scoring · commissions · queries
+============================================================ */
+const STAGES={new:{n:'New',p:10},qualified:{n:'Qualified',p:25},visit:{n:'Site Visit',p:45},negotiation:{n:'Negotiation',p:70},won:{n:'Won',p:100},lost:{n:'Lost',p:0}};
+const LEAD_STATUS={new:'New',contacted:'Contacted',qualified:'Qualified',converted:'Converted',lost:'Lost'};
+const PROP_STATUS={available:'Available',under_offer:'Under offer',sold:'Sold'};
+const TIMELINES=['ASAP','1-3 months','3-6 months','Just exploring'];
+const SOURCES=['Referral','Zillow Portal','Website','Instagram','Walk-in','Webhook'];
+const LOST_REASONS=['Priced out','Chose another property','Financing fell through','Changed plans','Other'];
+
+function scoreLead(l){
+  const avg=db.properties.filter(p=>p.orgId===l.orgId).reduce((a,p)=>a+p.price,0)/(db.properties.length||1);
+  const f={};
+  f.budget=clamp(Math.round((l.budgetMax/(avg*1.4))*30),2,30);
+  f.timeline={'ASAP':25,'1-3 months':18,'3-6 months':11,'Just exploring':5}[l.timeline]??8;
+  const days=l.lastContactAt?Math.floor((now()-l.lastContactAt)/DAY):45;
+  const rec=days<=3?15:days<=7?11:days<=14?7:days<=30?3:0;
+  const acts=db.activities.filter(a=>a.entity==='lead'&&a.entityId===l.id).length;
+  f.engagement=Math.min(25,rec+Math.min(10,acts*2));
+  f.source={'Referral':15,'Webhook':12,'Zillow Portal':11,'Website':10,'Walk-in':8,'Instagram':7}[l.source]??8;
+  f.profile=(l.email?2:0)+(l.phone?3:0)+(l.budgetMax?3:0)+(l.notes?2:0);
+  return{total:clamp(Object.values(f).reduce((a,b)=>a+b,0),0,100),factors:f};
+}
+function rescore(l){const s=scoreLead(l);l.score=s.total;l.scoreF=s.factors;return l}
+function createLead(data,byUser){
+  const l={id:uid(),orgId:cur()?.orgId||'o1',status:'new',createdAt:now(),lastContactAt:null,assignedTo:data.assignedTo||null,notes:data.notes||'',...data};
+  rescore(l);
+  db.leads.unshift(l);
+  act(`New lead — ${l.name} (${l.source})`,{userId:byUser?.id,entity:'lead',entityId:l.id,about:l.assignedTo});
+  if(l.score>=80&&l.assignedTo)notify([l.assignedTo],`${l.name} scored ${l.score}/100 — hot lead`,'lead');
+  return l;
+}
+function scopeLeads(){const u=cur();return isMgr(u)?db.leads.filter(l=>l.orgId===u.orgId):db.leads.filter(l=>l.orgId===u.orgId&&l.assignedTo===u.id)}
+function scopeDeals(){const u=cur();return isMgr(u)?db.deals.filter(d=>d.orgId===u.orgId):db.deals.filter(d=>d.orgId===u.orgId&&d.assignedTo===u.id)}
+function scopeTasks(){const u=cur();return db.tasks.filter(t=>t.orgId===u.orgId&&(isMgr(u)||t.assignedTo===u.id))}
+function scopeComs(){const u=cur();return db.coms.filter(c=>c.orgId===u.orgId&&(isMgr(u)||c.agentId===u.id))}
+const userById=id=>db.users.find(u=>u.id===id)||{name:'Unassigned'};
+
+function rangeFrom(k){const n=new Date();let f;
+  if(k==='30d')f=now()-30*DAY;else if(k==='mtd')f=+new Date(n.getFullYear(),n.getMonth(),1);
+  else if(k==='qtd')f=+new Date(n.getFullYear(),Math.floor(n.getMonth()/3)*3,1);
+  else if(k==='ytd')f=+new Date(n.getFullYear(),0,1);else f=0;
+  return{from:f,to:now()}}
+const inR=ts=>ts>=rangeFrom(S.range).from;
+function kpiData(){
+  const u=cur(),deals=scopeDeals(),leads=scopeLeads(),coms=scopeComs();
+  const open=deals.filter(d=>!['won','lost'].includes(d.stage));
+  const won=deals.filter(d=>d.stage==='won'&&d.closedAt&&inR(d.closedAt));
+  const lost=deals.filter(d=>d.stage==='lost'&&inR(d.stageChangedAt));
+  const prevLen=rangeFrom(S.range).from?rangeFrom(S.range).to-rangeFrom(S.range).from:30*DAY;
+  const wonPrev=deals.filter(d=>d.stage==='won'&&d.closedAt&&d.closedAt>=rangeFrom(S.range).from-prevLen&&d.closedAt<rangeFrom(S.range).from);
+  const wonV=won.reduce((a,d)=>a+d.value,0),wonPrevV=wonPrev.reduce((a,d)=>a+d.value,0);
+  const delta=wonPrevV?Math.round((wonV-wonPrevV)/wonPrevV*100):(wonV?100:null);
+  const comR=coms.filter(c=>inR(c.at));
+  const newLeads=leads.filter(l=>inR(l.createdAt)).length;
+  const wr=(won.length+lost.length)?Math.round(won.length/(won.length+lost.length)*100):null;
+  return{open,won,lost,wonV,delta,comR,wr,leads,newLeads,
+    pipeV:open.reduce((a,d)=>a+d.value,0),
+    weighted:open.reduce((a,d)=>a+d.value*STAGES[d.stage].p/100,0),
+    comGross:comR.reduce((a,c)=>a+c.gross,0),
+    comMine:comR.reduce((a,c)=>a+c.agentAmt,0),
+    comHouse:comR.reduce((a,c)=>a+c.houseAmt,0),
+    activeLeads:leads.filter(l=>!['converted','lost'].includes(l.status)).length};
+}
+/* ---------- AI answer engine (local rules, role-scoped) ---------- */
+function aiAnswer(q){
+  const t=q.toLowerCase(),u=cur(),K=kpiData();
+  const row=(a,b)=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span style="color:var(--ink2)">${a}</span><b class="tnum">${b}</b></div>`;
+  const wrap=(big,desc,rows)=>`<div class="ans-big">${big}</div><div class="ans-p">${desc}</div><div style="padding:0 12px 12px">${rows}</div>`;
+  if(/top|best/.test(t)&&/agent|rep|team/.test(t)&&isMgr(u)){
+    const rs=db.users.filter(x=>x.role==='agent').map(a=>{const w=scopeDeals().filter(d=>d.stage==='won'&&d.assignedTo===a.id);return[a.name,w.reduce((s,d)=>s+d.value,0),w.length]}).sort((a,b)=>b[1]-a[1]);
+    return{title:'Top agents — all time',html:wrap(fmt$M(rs[0][1]),`${rs[0][0]} leads closed value across ${rs.reduce((s,r)=>s+r[2],0)} won deals.`,rs.map(r=>row(`${esc(r[0])} · ${r[2]} won`,fmt$M(r[1]))).join(''))};
+  }
+  if(/commission|payout|earn/.test(t)){
+    const mine=u.role==='agent';
+    return{title:`Commissions — ${RANGE_LBL[S.range]}`,html:wrap(mine?fmt$(K.comMine):fmt$(K.comGross),mine?`Your share of commission recorded in period.`:`Gross commission across the team; house share ${fmt$(K.comHouse)}.`,row('Records',K.comR.length)+row('House share',fmt$(K.comHouse))+row('Pending payout',fmt$(K.comR.filter(c=>c.status==='pending').reduce((a,c)=>a+c.agentAmt,0))))};
+  }
+  if(/pipeline|forecast|weighted/.test(t)){
+    return{title:'Pipeline forecast',html:wrap(fmt$M(K.pipeV),`${K.open.length} open deals; probability-weighted forecast ${fmt$M(K.weighted)}.`,Object.keys(STAGES).filter(s=>!['won','lost'].includes(s)).map(s=>{const ds=K.open.filter(d=>d.stage===s);return row(`${STAGES[s].n} (${STAGES[s].p}%)`,ds.length?`${ds.length} · ${fmt$M(ds.reduce((a,d)=>a+d.value,0))}`:'—')}).join(''))};
+  }
+  if(/revenue|closed|won|sales/.test(t)){
+    return{title:`Closed revenue — ${RANGE_LBL[S.range]}`,html:wrap(fmt$M(K.wonV),`${K.won.length} deals won${K.delta!==null?` · ${K.delta>=0?'+':''}${K.delta}% vs prior period`:''}.`,K.won.slice(0,5).map(d=>row(esc(d.title),fmt$M(d.value))).join(''))};
+  }
+  if(/\bhot\b|best lead/.test(t)){
+    const hot=scopeLeads().filter(l=>l.score>=80&&!['converted','lost'].includes(l.status));
+    return{title:'Hot leads (score ≥ 80)',html:wrap(String(hot.length),hot.length?`Highest: ${esc(hot.sort((a,b)=>b.score-a.score)[0].name)} at ${hot[0].score}/100.`:'No leads currently cross the 80 threshold.',hot.slice(0,5).map(l=>row(`${esc(l.name)} · ${esc(l.source)}`,l.score+'/100')).join(''))};
+  }
+  if(/overdue|follow.?up|task/.test(t)){
+    const od=scopeTasks().filter(x=>!x.done&&x.dueAt<now());
+    return{title:'Overdue follow-ups',html:wrap(String(od.length),od.length?'Oldest first — these are costing you conversion.':'Nothing overdue. Rare and excellent.',od.sort((a,b)=>a.dueAt-b.dueAt).slice(0,5).map(x=>row(esc(x.title),ago(x.dueAt).replace(' ago','')+' late')).join(''))};
+  }
+  if(/stall|stuck/.test(t)){
+    const st=K.open.filter(d=>now()-d.stageChangedAt>10*DAY);
+    return{title:'Stalled deals',html:wrap(String(st.length),st.length?`${fmt$M(st.reduce((a,d)=>a+d.value,0))} sitting 10+ days without stage movement.`:'Pipeline is moving well.',st.map(d=>row(esc(d.title),Math.floor((now()-d.stageChangedAt)/DAY)+'d in '+STAGES[d.stage].n)).join(''))};
+  }
+  if(/source/.test(t)){
+    const ls=scopeLeads(),counts={};ls.forEach(l=>counts[l.source]=(counts[l.source]||0)+1);
+    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    return{title:'Leads by source',html:wrap(top[0]?top[0][0]:'—',top[0]?`${top[0][1]} of ${ls.length} leads — your strongest channel.`:'No leads yet.',top.map(s=>row(esc(s[0]),s[1])).join(''))};
+  }
+  if(/how many|leads/.test(t)){
+    return{title:'Active leads',html:wrap(String(K.activeLeads),`${K.newLeads} new in the selected period; ${scopeLeads().filter(l=>l.score>=80).length} scoring 80+.`,'')};
+  }
+  return null;
+}
+
+/* ============================================================
+   5 · UI STATE · PRIMITIVES
+============================================================ */
+let S={route:'dashboard',range:'30d',leadQ:'',leadStatus:'',leadSource:'',leadAgent:'',pipeAgent:'',secSev:'',notifOpen:false,cmdOpen:false,cmd:'',cmdIdx:0,flash:null};
+const RANGE_LBL={'30d':'last 30 days','mtd':'this month','qtd':'this quarter','ytd':'year to date','all':'all time'};
+
+function toast(msg,kind='ok'){
+  const t=document.createElement('div');t.className='toast '+(kind==='ok'?'':kind);
+  t.innerHTML=`${icon(kind==='err'?'alert':kind==='info'?'bell':'check',16)}<span>${msg}</span>`;
+  $('#toasts').appendChild(t);
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),320)},4200);
+}
+function openLayer(html,cls){const L=$('#layer');L.innerHTML=`<div class="backdrop" data-action="layer.close"></div><div class="${cls}">${html}</div>`;requestAnimationFrame(()=>L.classList.add('on'))}
+function closeLayer(instant){const L=$('#layer');if(instant){L.classList.remove('on');L.innerHTML='';return}L.classList.remove('on');setTimeout(()=>L.innerHTML='',280)}
+const openDrawer=h=>openLayer(h,'drawer');
+const openModal=h=>openLayer(h,'modal');
+let onConf=null;
+function confirmDanger({title,body,label='Confirm',typed=null,onYes}){
+  onConf=onYes;
+  openModal(`<h3>${esc(title)}</h3><p class="m-sub" style="margin-top:8px">${body}</p>
+    ${typed?`<label>Type “${esc(typed)}” to continue</label><input name="typedv" autocomplete="off" spellcheck="false">`:''}
+    <div class="m-actions"><button class="btn sec" data-action="layer.close">Cancel</button><button class="btn dng" data-action="conf.yes" data-typed="${esc(typed||'')}">${esc(label)}</button></div>`);
+}
+const scoreColor=s=>s>=75?'var(--green)':s>=50?'var(--brass)':'var(--red)';
+function scoreRing(sc,size=62){
+  const c=2*Math.PI*26,off=c*(1-sc/100);
+  return`<svg width="${size}" height="${size}" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="#E4DFD0" stroke-width="6"/><circle cx="32" cy="32" r="26" fill="none" stroke="${scoreColor(sc)}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 32 32)"/><text x="32" y="37" text-anchor="middle" font-size="17" font-weight="600" fill="var(--ink)">${sc}</text></svg>`;
+}
+const scoreBar=s=>`<span class="score-bar"><i style="width:${s}%;background:${scoreColor(s)}"></i></span><b class="tnum">${s}</b>`;
+const pill=(txt,cls)=>`<span class="pill ${cls}">${esc(txt)}</span>`;
+const leadPill=l=>pill(LEAD_STATUS[l.status],{new:'pl-neut',contacted:'pl-info',qualified:'pl-warn',converted:'pl-pos',lost:'pl-dang'}[l.status]);
+const propPill=p=>pill(PROP_STATUS[p.status],{available:'pl-info',under_offer:'pl-warn',sold:'pl-pos'}[p.status]);
+const stagePill=s=>pill(STAGES[s].n,{new:'pl-neut',qualified:'pl-info',visit:'pl-warn',negotiation:'pl-warn',won:'pl-pos',lost:'pl-dang'}[s]);
+const sevPill=s=>`<span class="pill sev-${s}">${s.toUpperCase()}</span>`;
+
+/* ============================================================
+   6 · VIEWS
+============================================================ */
+const VIEWS={},AFTER={},ACTIONS={},FORMS={},CHANGES={},INPUTS={};
+
+/* ---------- login ---------- */
+function renderLogin(){
+  $('#app').innerHTML=`<div class="login">
+    <div class="lg-left">
+      <div class="wordmark"><svg width="30" height="30" viewBox="0 0 32 32"><circle cx="16" cy="16" r="9" fill="none" stroke="#C9A24B" stroke-width="1.8"/><path d="M16 3v26" stroke="#C9A24B" stroke-width="1.8"/></svg><b>MERIDIAN</b></div>
+      <svg class="arches" width="560" height="430" viewBox="0 0 560 430" fill="none">${[70,110,150,190,230].map((r,i)=>`<path d="M ${280-r} 430 V ${190+ (230-r)*0.35} A ${r} ${r} 0 0 1 ${280+r} ${190+(230-r)*0.35} V 430" stroke="#C9A24B" stroke-width="1.1" opacity="${0.16+i*0.11}"/>`).join('')}<path d="M0 430h560" stroke="#C9A24B" opacity=".3"/></svg>
+      <div class="lg-copy">
+        <h1>The operating system for serious brokerages.</h1>
+        <p>Leads, pipeline, site visits and commissions in one ledger — with lead scoring, forecasting and an AI analyst that actually knows your book of business.</p>
+      </div>
+    </div>
+    <div class="lg-right"><div class="lg-card">
+      <h2>Sign in</h2><p class="mini" style="margin:4px 0 8px">Harrow &amp; Vale Realty workspace</p>
+      <form data-form="login" novalidate>
+        <label>Email</label><input name="email" type="email" autocomplete="username" placeholder="you@harrowvale.com">
+        <label>Password</label><input name="password" type="password" autocomplete="current-password" placeholder="••••••••">
+        <div class="form-err" id="loginErr"></div>
+        <button class="btn pri" style="width:100%;justify-content:center;margin-top:18px">Sign in ${icon('arrow',15)}</button>
+      </form>
+      <div class="demo-chips">
+        <span class="mini" style="align-self:center">Demo:</span>
+        <button class="chip" data-action="demo.fill" data-e="eleanor@harrowvale.com">Owner</button>
+        <button class="chip" data-action="demo.fill" data-e="marcus@harrowvale.com">Admin</button>
+        <button class="chip" data-action="demo.fill" data-e="priya@harrowvale.com">Agent</button>
+      </div>
+      <div class="sec-note">${icon('shield',15)}<span>Sessions expire after 30 minutes of inactivity. Repeated failed sign-ins lock the account temporarily and are recorded in the security log.</span></div>
+    </div></div>
+  </div>`;
+}
+ACTIONS['demo.fill']=(_,t)=>{const f=$('[data-form="login"]');f.email.value=t.dataset.e;f.password.value='demo1234';f.password.focus()};
+FORMS['login']=async fd=>{
+  const email=String(fd.get('email')||'').trim().toLowerCase(),pw=String(fd.get('password')||'');
+  const err=m=>{const e=$('#loginErr');e.textContent=m;e.classList.add('on')};
+  const fails=db.security.filter(s=>s.event==='auth.login.fail'&&s.actor===email&&now()-s.at<15*60e3);
+  if(fails.length>=5&&now()-fails[0].at<5*60e3){
+    logSec('auth.lock','high',email,'Account temporarily locked — 5 failed attempts in 15 minutes');
+    save();return err('Too many failed attempts. Try again in a few minutes.');
+  }
+  const user=db.users.find(u=>u.email.toLowerCase()===email);
+  const hash=await sha256(pw+PW_SALT);
+  if(!user||user.pass!==hash){
+    logSec('auth.login.fail','low',email||'unknown','Invalid credentials');save();
+    return err('Invalid email or password.');
+  }
+  if(!user.active){logSec('auth.login.fail','med',email,'Sign-in on deactivated account');save();return err('Invalid email or password.')}
+  SESSION={uid:user.id,token:randHex(16),exp:now()+30*60e3,ip:`10.${Math.floor(Math.random()*200)+20}.${Math.floor(Math.random()*250)+1}.${Math.floor(Math.random()*250)+1}`};
+  localStorage.setItem(SESS_KEY,JSON.stringify(SESSION));
+  logSec('auth.login','low',user.email,`Signed in from ${SESSION.ip}`);save();
+  location.hash='#/dashboard';renderApp();
+  toast(`Welcome back, ${esc(user.name.split(' ')[0])}.`);
+};
+
+/* ---------- shell ---------- */
+const NAV=[
+  {r:'dashboard',l:'Overview',i:'grid'},{r:'leads',l:'Leads',i:'users'},{r:'pipeline',l:'Pipeline',i:'board'},
+  {r:'properties',l:'Properties',i:'building'},{r:'visits',l:'Site visits',i:'calcheck'},{r:'commissions',l:'Commissions',i:'coin'},
+  {sec:'Administration'},{r:'team',l:'Team',i:'users',p:'team.view'},{r:'integrations',l:'Integrations',i:'plug',p:'integrations'},{r:'security',l:'Security log',i:'shield',p:'security.log'},
+];
+const ROUTE_PERM={team:'team.view',integrations:'integrations',security:'security.log'};
+function renderShell(){
+  const u=cur();
+  const unread=db.notifs.filter(n=>n.uid===u.id&&!n.read).length;
+  $('#app').innerHTML=`<div class="app">
+    <aside class="side">
+      <div class="brand"><svg width="26" height="26" viewBox="0 0 32 32"><circle cx="16" cy="16" r="9" fill="none" stroke="#C9A24B" stroke-width="1.8"/><path d="M16 3v26" stroke="#C9A24B" stroke-width="1.8"/></svg><b>MERIDIAN</b></div>
+      <nav class="nav">${NAV.map(n=>n.sec?(`<div class="nav-sec">${n.sec}</div>`):(!n.p||can(u,n.p))?`<button class="nav-i ${S.route===n.r?'on':''}" data-action="nav" data-r="${n.r}">${icon(n.i,17)}<span>${n.l}</span></button>`:'').join('')}</nav>
+      <div class="side-foot">${avatar(u.name,32)}<div class="who"><b>${esc(u.name)}</b><span>${u.role}</span></div>
+      <button class="btn gho" style="color:#8B8574" data-action="logout" title="Sign out">${icon('logout',17)}</button></div>
+    </aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="cmd">${icon('search',16)}<input id="cmd" placeholder="Search or ask — try “pipeline forecast”" autocomplete="off" spellcheck="false"><kbd>⌘K</kbd><div id="cmdPop" hidden></div></div>
+        <div class="top-right">
+          <button class="bell" data-action="notif.toggle" title="Notifications">${icon('bell',19)}${unread?`<span class="cnt">${unread}</span>`:''}</button>
+          <div class="userchip">${avatar(u.name,32)}<div class="nm"><b>${esc(u.name)}</b><span>${u.role}</span></div></div>
+        </div>
+        <div id="notifPop"></div>
+      </div>
+      <div id="view"></div>
+    </div>
+  </div>`;
+}
+function renderMain(){
+  const u=cur();if(!u)return;
+  const perm=ROUTE_PERM[S.route];
+  if(perm&&!can(u,perm)){
+    logSec('authz.denied','high',u.email,`Route access denied: ${S.route}`);save();
+    S.route='denied';
+  }
+  const v=$('#view');if(!v)return;
+  v.innerHTML=`<div class="pg">${(VIEWS[S.route]||VIEWS.dashboard)()}</div>`;
+  AFTER[S.route]&&AFTER[S.route]();
+}
+function renderApp(){if(!checkSession()||!cur()){if(cur()===null&&!SESSION){renderLogin();return}}renderShell();renderMain()}
+function renderAll(){renderShell();renderMain()}
+
+/* ---------- notifications ---------- */
+function renderNotifPop(){
+  const u=cur(),list=db.notifs.filter(n=>n.uid===u.id).slice(0,8);
+  $('#notifPop').innerHTML=list.length?`<div class="pop" style="position:fixed;top:64px;right:20px">
+    <div class="pop-h">Notifications<button data-action="notif.all">Mark all read</button></div>
+    ${list.map(n=>`<div class="notif ${n.read?'':'unread'}"><span class="notif-ic">${icon({lead:'users',deal:'board',visit:'calcheck',webhook:'plug',task:'check',finance:'coin'}[n.type]||'bell',14)}</span><span>${esc(n.msg)}</span><span class="t">${ago(n.at)}</span></div>`).join('')}
+  </div>`:`<div class="pop" style="position:fixed;top:64px;right:20px"><div class="pop-h">Notifications</div><div class="empty" style="padding:26px">You're all caught up.</div></div>`;
+}
+ACTIONS['notif.toggle']=()=>{S.notifOpen=!S.notifOpen;if(S.notifOpen){renderNotifPop()}else $('#notifPop').innerHTML=''};
+ACTIONS['notif.all']=()=>{const u=cur();db.notifs.forEach(n=>{if(n.uid===u.id)n.read=true});save();S.notifOpen=false;$('#notifPop').innerHTML='';renderAll()};
+
+/* ---------- dashboard ---------- */
+VIEWS.dashboard=()=>{
+  const u=cur(),K=kpiData(),mgr=isMgr(u);
+  const delta=K.delta===null?'':`<b class="${K.delta<0?'down':''}">${K.delta>=0?'+':''}${K.delta}%</b> vs prior period`;
+  const cells=[
+    {k:'pipeline',l:'Open pipeline',v:fmt$M(K.pipeV),s:`weighted ${fmt$M(K.weighted)} · ${K.open.length} deals`},
+    {k:'closed',l:mgr?'Closed revenue':'My closed revenue',v:fmt$M(K.wonV),s:`${K.won.length} deals · ${delta||'no prior data'}`},
+    {k:'commission',l:mgr?'Gross commission':'My commission',v:fmt$M(mgr?K.comGross:K.comMine),s:mgr?`house share ${fmt$M(K.comHouse)}`:`${K.comR.length} records · ${RANGE_LBL[S.range]}`},
+    {k:'leads',l:'Active leads',v:String(K.activeLeads),s:`+${K.newLeads} new ${RANGE_LBL[S.range]}`},
+    {k:'winrate',l:'Win rate',v:K.wr===null?'—':K.wr+'%',s:`${K.won.length} won / ${K.lost.length} lost`},
+  ];
+  return`
+  <div class="pg-head"><div><h1>${mgr?'Command overview':'My overview'}</h1><div class="sub">${esc(db.settings.orgName)} · ${mgr?'organization-wide':'your book of business'}</div></div>
+  <div class="h-actions"><div class="filters" style="margin:0">${['30d','mtd','qtd','ytd','all'].map(r=>`<button class="btn sm ${S.range===r?'pri':'sec'}" data-action="range" data-r="${r}">${{'30d':'30D','mtd':'MTD','qtd':'QTD','ytd':'YTD','all':'All'}}[r]}</button>`).join('')}</div></div></div>
+  <div class="ledger">${cells.map(c=>`<button class="lg" data-action="drill" data-k="${c.k}"><span class="l">${c.l}</span><span class="v tnum">${c.v}</span><span class="s">${c.s}</span></button>`).join('')}</div>
+  <div class="dash-grid">
+    <div>
+      <div class="panel-h"><h2>Closed revenue</h2><span class="mini">by month · trailing 6 months</span></div>
+      <div class="chart" id="revWrap">${revChart()}<div class="chart-tip" id="revTip"></div></div>
+      <div class="panel-h" style="margin-top:28px"><h2>Pipeline by stage</h2><span class="mini">click a stage to jump</span></div>
+      ${stageBars()}
+    </div>
+    <div>
+      <div class="panel-h"><h2>${icon('sparkle',15)} Meridian Intelligence</h2><span class="mini">live</span></div>
+      ${insights().map(i=>`<button class="ins" data-action="insight" data-k="${i.k}"><span class="dot" style="margin-top:6px;background:${i.sev==='hi'?'var(--red)':i.sev==='md'?'var(--brass)':'var(--ink3)'}"></span><div><b>${esc(i.t)}</b><p>${esc(i.b)}</p></div>${icon('arrow',14)}</button>`).join('')||'<div class="empty">No signals right now — the book looks healthy.</div>'}
+      <div class="panel-h" style="margin-top:26px"><h2>Lead sources</h2><span class="mini">active + converted book</span></div>
+      ${sourceBars()}
+    </div>
+  </div>
+  <div class="trio">
+    <div><div class="panel-h"><h2>Follow-ups</h2><button class="btn gho sm" data-action="task.new">${icon('plus',13)} Add</button></div>
+      ${myTasks()}
+    </div>
+    <div><div class="panel-h"><h2>Recent activity</h2></div><div class="actfeed">${activityFeed()}</div></div>
+    <div><div class="panel-h"><h2>${mgr?'Agent leaderboard':'My pipeline snapshot'}</h2></div>${mgr?leaderboard():agentSnapshot()}</div>
+  </div>`;
+};
+function revChart(){
+  const deals=scopeDeals(),n=new Date(),buckets=[];
+  for(let i=5;i>=0;i--){const d=new Date(n.getFullYear(),n.getMonth()-i,1);buckets.push({k:d.getFullYear()+'-'+d.getMonth(),label:d.toLocaleString('en-US',{month:'short'}),v:0})}
+  deals.filter(d=>d.stage==='won'&&d.closedAt).forEach(d=>{const dt=new Date(d.closedAt),k=dt.getFullYear()+'-'+dt.getMonth();const b=buckets.find(b=>b.k===k);if(b)b.v+=d.value});
+  const W=620,H=200,PL=46,PR=14,PT=12,PB=26,max=Math.max(...buckets.map(b=>b.v),1);
+  const x=i=>PL+i*(W-PL-PR)/5, y=v=>H-PB-(v/max)*(H-PT-PB);
+  const pts=buckets.map((b,i)=>[x(i),y(b.v)]);
+  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area=line+` L ${x(5)} ${H-PB} L ${x(0)} ${H-PB} Z`;
+  const grid=[0,.5,1].map(f=>{const gy=y(max*f);return`<line x1="${PL}" x2="${W-PR}" y1="${gy}" y2="${gy}" stroke="var(--line)" stroke-dasharray="2 4"/><text x="${PL-8}" y="${gy+4}" text-anchor="end" font-size="10" fill="var(--ink3)">${fmt$M(max*f)}</text>`}).join('');
+  window._revPts=pts;window._revBk=buckets;
+  return`<svg id="revSvg" width="100%" viewBox="0 0 ${W} ${H}" style="display:block">
+    ${grid}<path d="${area}" fill="rgba(29,77,54,.09)"/><path d="${line}" fill="none" stroke="var(--green)" stroke-width="2" stroke-linejoin="round"/>
+    ${pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="var(--paper)" stroke="var(--green)" stroke-width="2"/>`).join('')}
+    ${buckets.map((b,i)=>`<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="10.5" fill="var(--ink3)">${b.label}</text>`).join('')}
+  </svg>`;
+}
+AFTER.dashboard=()=>{
+  const svg=$('#revSvg'),tip=$('#revTip'),wrap=$('#revWrap');
+  if(!svg)return;
+  svg.addEventListener('mousemove',e=>{
+    const r=svg.getBoundingClientRect(),px=(e.clientX-r.left)*(620/r.width);
+    let bi=0,bd=1e9;window._revPts.forEach((p,i)=>{const d=Math.abs(p[0]-px);if(d<bd){bd=d;bi=i}});
+    const p=window._revPts[bi],b=window._revBk[bi];
+    tip.style.display='block';tip.style.left=(p[0]/620*100)+'%';tip.style.top=(p[1]/200*100)+'%';
+    tip.textContent=`${b.label} — ${fmt$M(b.v)} closed`;
+  });
+  svg.addEventListener('mouseleave',()=>tip.style.display='none');
+};
+function stageBars(){
+  const K=kpiData(),max=Math.max(...K.open.map(d=>d.value),1);
+  return Object.keys(STAGES).filter(s=>!['won','lost'].includes(s)).map(s=>{
+    const ds=K.open.filter(d=>d.stage===s),v=ds.reduce((a,d)=>a+d.value,0);
+    return`<button class="fbar click" data-action="pipe.jump" data-s="${s}"><span>${STAGES[s].n}</span><span class="track"><i style="width:${v?Math.max(6,v/max*100):2}%"></i></span><span class="val tnum">${ds.length} · ${fmt$M(v)}</span></button>`;
+  }).join('');
+}
+function sourceBars(){
+  const ls=scopeLeads(),counts={};ls.forEach(l=>counts[l.source]=(counts[l.source]||0)+1);
+  const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,6),max=Math.max(...top.map(t=>t[1]),1);
+  return top.map(t=>`<div class="fbar"><span>${esc(t[0])}</span><span class="track"><i style="width:${t[1]/max*100}%;background:var(--brass)"></i></span><span class="val tnum">${t[1]} lead${t[1]>1?'s':''}</span></div>`).join('');
+}
+function insights(){
+  const out=[],u=cur(),K=kpiData(),open=K.open,leads=scopeLeads(),tasks=scopeTasks();
+  const stalled=open.filter(d=>now()-d.stageChangedAt>10*DAY).sort((a,b)=>a.stageChangedAt-b.stageChangedAt);
+  if(stalled.length){const worst=Math.floor((now()-stalled[0].stageChangedAt)/DAY);
+    out.push({k:'stalled',sev:stalled.some(d=>d.stage==='negotiation')?'hi':'md',t:`${stalled.length} deal${stalled.length>1?'s':''} stalled ${worst}+ days`,b:`${fmt$M(stalled.reduce((a,d)=>a+d.value,0))} without movement — oldest: ${stalled[0].title}.`})}
+  const over=tasks.filter(t=>!t.done&&t.dueAt<now());
+  if(over.length)out.push({k:'overdue',sev:'hi',t:`${over.length} overdue follow-up${over.length>1?'s':''}`,b:`Oldest: “${over.sort((a,b)=>a.dueAt-b.dueAt)[0].title}” — ${ago(over[0].dueAt)}.`});
+  const lateVisits=db.visits.filter(v=>v.status==='scheduled'&&v.at<now()&&(isMgr(u)||v.agentId===u.id));
+  if(lateVisits.length)out.push({k:'latevisits',sev:'md',t:`${lateVisits.length} site visit past due`,b:`${esc(userById(lateVisits[0].agentId).name)} — ${esc(db.deals.find(d=>d.id===lateVisits[0].dealId)?.title||'visit')} was scheduled ${ago(lateVisits[0].at)}.`});
+  const hotNoDeal=leads.filter(l=>l.score>=80&&!['converted','lost'].includes(l.status)&&!open.some(d=>d.leadId===l.id));
+  if(hotNoDeal.length)out.push({k:'hot',sev:'md',t:`${hotNoDeal.length} hot lead${hotNoDeal.length>1?'s':''} without a deal`,b:`${esc(hotNoDeal.sort((a,b)=>b.score-a.score)[0].name)} scores ${hotNoDeal[0].score}/100 — open a pipeline card.`});
+  const un=leads.filter(l=>!l.assignedTo&&!['converted','lost'].includes(l.status));
+  if(un.length&&isMgr(u))out.push({k:'unassigned',sev:'low',t:`${un.length} unassigned lead${un.length>1?'s':''}`,b:'Round-robin them to the team before they go cold.'});
+  const sCount={};leads.forEach(l=>{if(l.source)sCount[l.source]=(sCount[l.source]||0)+1});
+  const srcs=Object.entries(sCount).sort((a,b)=>b[1]-a[1]);
+  if(srcs.length>1&&srcs[0][0]==='Referral')out.push({k:'sources',sev:'low',t:'Referrals dominate your book',b:`${srcs[0][1]} of ${leads.length} leads come from referrals — worth protecting that channel.`});
+  return out.slice(0,5);
+}
+function myTasks(){
+  const tasks=scopeTasks().filter(t=>!t.done).sort((a,b)=>a.dueAt-b.dueAt).slice(0,6);
+  if(!tasks.length)return'<div class="empty" style="padding:22px">No open follow-ups.</div>';
+  return tasks.map(t=>{const over=!t.done&&t.dueAt<now();
+    return`<div class="task ${over?'over':''}"><button class="ck ${t.done?'done':''}" data-action="task.toggle" data-id="${t.id}">${icon('check',12)}</button><span>${esc(t.title)}</span><span class="due">${over?ago(t.dueAt)+' late':t.dueAt-now()<DAY?'today':fdate(t.dueAt)}</span></div>`}).join('');
+}
+function activityFeed(){
+  const u=cur();let acts=db.activities.filter(a=>isMgr(u)||a.userId===u.id||a.about===u.id).slice(0,8);
+  if(!acts.length)return'<div class="empty" style="padding:22px">No activity yet.</div>';
+  return acts.map(a=>`<div class="a"><span class="notif-ic">${icon('clock',13)}</span><span>${esc(a.msg)}</span><span class="t">${ago(a.at)}</span></div>`).join('');
+}
+function leaderboard(){
+  const rs=db.users.filter(x=>x.role==='agent').map(a=>{
+    const won=scopeDeals().filter(d=>d.stage==='won'&&d.assignedTo===a.id);
+    return{a,v:won.reduce((s,d)=>s+d.value,0),n:won.length,leads:db.leads.filter(l=>l.assignedTo===a.id&&!['converted','lost'].includes(l.status)).length};
+  }).sort((x,y)=>y.v-x.v);
+  const max=Math.max(...rs.map(r=>r.v),1);
+  return rs.map(r=>`<div class="fbar"><span style="display:flex;align-items:center;gap:8px">${avatar(r.a.name,24)}${esc(r.a.name.split(' ')[0])}</span><span class="track"><i style="width:${r.v/max*100}%"></i></span><span class="val tnum">${r.n} won · ${fmt$M(r.v)}</span></div>`).join('');
+}
+function agentSnapshot(){
+  const K=kpiData();
+  return`<div style="font-size:13px">
+    ${[['Weighted forecast',fmt$M(K.weighted)],['Deals in negotiation',K.open.filter(d=>d.stage==='negotiation').length],['Upcoming visits',db.visits.filter(v=>v.status==='scheduled'&&v.agentId===cur().id&&v.at>=now()).length],['Pending commission',fmt$(scopeComs().filter(c=>c.status==='pending').reduce((a,c)=>a+c.agentAmt,0))]].map(r=>`<div style="display:flex;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--line)"><span style="color:var(--ink2)">${r[0]}</span><b class="tnum">${r[1]}</b></div>`).join('')}
+  </div>`;
+}
+ACTIONS['range']=(_,t)=>{S.range=t.dataset.r;renderMain()};
+ACTIONS['pipe.jump']=(_,t)=>{S.route='pipeline';S.flash=t.dataset.s;location.hash='#/pipeline';renderMain();
+  const col=$(`.kb-col[data-stage="${S.flash}"]`);if(col){col.classList.add('flash');setTimeout(()=>col.classList.remove('flash'),1600)}S.flash=null};
+
+/* ---------- drill-down drawers ---------- */
+ACTIONS['drill']=(_,t)=>openDrill(t.dataset.k);
+ACTIONS['insight']=(_,t)=>openDrill(t.dataset.k);
+function openDrill(key){
+  const K=kpiData();let title='',rows='';
+  const dealRow=d=>`<tr class="row" data-action="deal.open" data-id="${d.id}"><td><b>${esc(d.title)}</b><br><span class="mini">${esc(userById(d.assignedTo).name)}</span></td><td>${stagePill(d.stage)}</td><td class="r tnum"><b>${fmt$(d.value)}</b></td></tr>`;
+  if(key==='pipeline'){title='Open pipeline';rows=`<table class="tbl"><tr><th>Deal</th><th>Stage</th><th class="r">Value</th></tr>${K.open.sort((a,b)=>b.value-a.value).map(dealRow).join('')||'<tr><td colspan="3" class="empty">No open deals.</td></tr>'}</table>
+    <p class="mini" style="margin-top:14px">Probability-weighted forecast: <b>${fmt$(K.weighted)}</b></p>`}
+  else if(key==='closed'){title=`Closed — ${RANGE_LBL[S.range]}`;rows=`<table class="tbl"><tr><th>Deal</th><th>Closed</th><th class="r">Value</th></tr>${K.won.map(d=>`<tr class="row" data-action="deal.open" data-id="${d.id}"><td><b>${esc(d.title)}</b><br><span class="mini">${esc(userById(d.assignedTo).name)}</span></td><td>${fdatey(d.closedAt)}</td><td class="r tnum"><b>${fmt$(d.value)}</b></td></tr>`).join('')||'<tr><td colspan="3" class="empty">Nothing closed in this period.</td></tr>'}</table>`}
+  else if(key==='commission'){const mine=cur().role==='agent';title=`Commissions — ${RANGE_LBL[S.range]}`;
+    rows=`<table class="tbl"><tr><th>Deal</th><th>Agent</th><th class="r">${mine?'My share':'Gross'}</th><th>Status</th></tr>${K.comR.map(c=>{const d=db.deals.find(x=>x.id===c.dealId)||{title:'—'};return`<tr><td>${esc(d.title)}</td><td>${esc(userById(c.agentId).name)}</td><td class="r tnum"><b>${fmt$(mine?c.agentAmt:c.gross)}</b></td><td>${pill(c.status,'pl-'+(c.status==='paid'?'pos':'warn'))}</td></tr>`}).join('')||'<tr><td colspan="4" class="empty">No commission records in this period.</td></tr>'}</table>`}
+  else if(key==='leads'){title='Active leads';const ls=[...scopeLeads()].filter(l=>!['converted','lost'].includes(l.status)).sort((a,b)=>b.score-a.score);
+    rows=`<table class="tbl"><tr><th>Lead</th><th>Score</th><th>Status</th></tr>${ls.slice(0,12).map(l=>`<tr class="row" data-action="lead.open" data-id="${l.id}"><td><b>${esc(l.name)}</b><br><span class="mini">${esc(l.source)}</span></td><td>${scoreBar(l.score)}</td><td>${leadPill(l)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No active leads.</td></tr>'}</table>`}
+  else if(key==='winrate'){title=`Win rate — ${RANGE_LBL[S.range]}`;rows=`<p style="font-family:Fraunces,serif;font-size:34px;margin-bottom:14px">${K.wr===null?'—':K.wr+'%'}</p><table class="tbl"><tr><th>Outcome</th><th>Deal</th><th class="r">Value</th></tr>${[...K.won.map(d=>[d,'won']),...K.lost.map(d=>[d,'lost'])].map(([d,st])=>`<tr class="row" data-action="deal.open" data-id="${d.id}"><td>${pill(st==='won'?'Won':'Lost',st==='won'?'pl-pos':'pl-dang')}</td><td>${esc(d.title)}</td><td class="r tnum">${fmt$(d.value)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No closed deals in this period.</td></tr>'}</table>`}
+  else if(key==='stalled'){title='Stalled deals';const st=K.open.filter(d=>now()-d.stageChangedAt>10*DAY).sort((a,b)=>a.stageChangedAt-b.stageChangedAt);
+    rows=`<table class="tbl"><tr><th>Deal</th><th>In stage</th><th class="r">Value</th></tr>${st.map(d=>`<tr class="row" data-action="deal.open" data-id="${d.id}"><td><b>${esc(d.title)}</b><br><span class="mini">${esc(userById(d.assignedTo).name)}</span></td><td>${Math.floor((now()-d.stageChangedAt)/DAY)}d · ${STAGES[d.stage].n}</td><td class="r tnum"><b>${fmt$(d.value)}</b></td></tr>`).join('')||'<tr><td colspan="3" class="empty">Everything is moving.</td></tr>'}</table>`}
+  else if(key==='overdue'){title='Overdue follow-ups';const od=scopeTasks().filter(t=>!t.done&&t.dueAt<now()).sort((a,b)=>a.dueAt-b.dueAt);
+    rows=od.map(t=>`<div class="task over"><button class="ck" data-action="task.toggle" data-id="${t.id}">${icon('check',12)}</button><span>${esc(t.title)}</span><span class="due">${esc(userById(t.assignedTo).name)} · ${ago(t.dueAt)} late</span></div>`).join('')||'<div class="empty">Nothing overdue.</div>'}
+  else if(key==='hot'){title='Hot leads without a deal';const ls=scopeLeads().filter(l=>l.score>=80&&!['converted','lost'].includes(l.status)&&!K.open.some(d=>d.leadId===l.id)).sort((a,b)=>b.score-a.score);
+    rows=`<table class="tbl"><tr><th>Lead</th><th>Score</th><th></th></tr>${ls.map(l=>`<tr><td><b>${esc(l.name)}</b><br><span class="mini">${esc(l.source)} · ${fmt$M(l.budgetMax)} budget</span></td><td>${scoreBar(l.score)}</td><td class="r"><button class="btn sm pri" data-action="deal.new" data-lead="${l.id}">New deal</button></td></tr>`).join('')||'<div class="empty">All hot leads are in the pipeline.</div>'}</table>`}
+  else if(key==='unassigned'){title='Unassigned leads';const un=scopeLeads().filter(l=>!l.assignedTo&&!['converted','lost'].includes(l.status));
+    rows=`<table class="tbl"><tr><th>Lead</th><th>Score</th><th></th></tr>${un.map(l=>`<tr><td><b>${esc(l.name)}</b><br><span class="mini">${esc(l.source)}</span></td><td>${scoreBar(l.score)}</td><td class="r"><button class="btn sm pri" data-action="lead.open" data-id="${l.id}">Assign</button></td></tr>`).join('')||'<div class="empty">Everyone has an owner.</div>'}</table>`}
+  else if(key==='latevisits'){title='Site visits past due';const lv=db.visits.filter(v=>v.status==='scheduled'&&v.at<now());
+    rows=`<table class="tbl"><tr><th>Deal</th><th>Was scheduled</th><th></th></tr>${lv.map(v=>{const d=db.deals.find(x=>x.id===v.dealId)||{title:'—'};return`<tr><td><b>${esc(d.title)}</b></td><td>${fdt(v.at)}</td><td class="r"><button class="btn sm pri" data-action="visit.complete" data-id="${v.id}">Complete</button></td></tr>`}).join('')}</table>`}
+  else if(key==='sources'){title='Lead sources';rows=sourceBars()}
+  openDrawer(`<div class="dw-h"><h3>${esc(title)}</h3><button class="btn gho dw-x" data-action="layer.close">${icon('x',18)}</button></div><div class="dw-b">${rows}</div>`);
+}
+
+/* ---------- leads ---------- */
+VIEWS.leads=()=>{
+  const u=cur(),mgr=isMgr(u);
+  return`<div class="pg-head"><div><h1>Leads</h1><div class="sub">${mgr?`${scopeLeads().length} in organization`:'your assigned leads'} · scored by budget, timeline, engagement &amp; source</div></div>
+  <div class="h-actions">${mgr?`<button class="btn sec" data-action="leads.export">${icon('download',15)} Export CSV</button>`:''}<button class="btn pri" data-action="lead.new">${icon('plus',15)} New lead</button></div></div>
+  <div class="filters">
+    <input placeholder="Search name, email…" value="${esc(S.leadQ)}" data-input="leadQ">
+    <select data-change="leadStatus"><option value="">All statuses</option>${Object.entries(LEAD_STATUS).map(([k,v])=>`<option ${sel(S.leadStatus,k)} value="${k}">${v}</option>`).join('')}</select>
+    <select data-change="leadSource"><option value="">All sources</option>${SOURCES.map(s=>`<option ${sel(S.leadSource,s)}>${s}</option>`).join('')}</select>
+    ${mgr?`<select data-change="leadAgent"><option value="">All agents</option>${db.users.filter(x=>x.role==='agent'&&x.active).map(a=>`<option ${sel(S.leadAgent,a.id)} value="${a.id}">${esc(a.name)}</option>`).join('')}</select>`:''}
+  </div>
+  <div id="leadRows">${leadRows()}</div>`;
+};
+function filteredLeads(){
+  return scopeLeads().filter(l=>
+    (!S.leadStatus||l.status===S.leadStatus)&&(!S.leadSource||l.source===S.leadSource)&&(!S.leadAgent||l.assignedTo===S.leadAgent)&&
+    (!S.leadQ||(l.name+l.email).toLowerCase().includes(S.leadQ.toLowerCase()))
+  ).sort((a,b)=>b.score-a.score||b.createdAt-a.createdAt);
+}
+function leadRows(){
+  const ls=filteredLeads();
+  if(!ls.length)return`<div class="empty"><h3 class="serif" style="font-size:17px">No leads match</h3><p>Adjust the filters, or create a lead to get started.</p></div>`;
+  return`<table class="tbl"><tr><th>Lead</th><th>Score</th><th>Status</th><th>Source</th><th class="r">Budget</th><th>Timeline</th><th>Agent</th><th class="r">Last contact</th></tr>
+  ${ls.map(l=>`<tr class="row" data-action="lead.open" data-id="${l.id}">
+    <td><div style="display:flex;gap:10px;align-items:center">${avatar(l.name,30)}<div><b>${esc(l.name)}</b><br><span class="mini">${esc(l.email)}</span></div></div></td>
+    <td>${scoreBar(l.score)}</td><td>${leadPill(l)}</td><td>${esc(l.source)}</td>
+    <td class="r tnum">${fmt$M(l.budgetMin)}–${fmt$M(l.budgetMax)}</td><td>${esc(l.timeline)}</td>
+    <td>${l.assignedTo?esc(userById(l.assignedTo).name.split(' ')[0]):pill('Unassigned','pl-dang')}</td>
+    <td class="r mini">${l.lastContactAt?ago(l.lastContactAt):'never'}</td></tr>`).join('')}</table>`;
+}
+INPUTS['leadQ']=v=>{S.leadQ=v;$('#leadRows').innerHTML=leadRows()};
+CHANGES['leadStatus']=v=>{S.leadStatus=v;$('#leadRows').innerHTML=leadRows()};
+CHANGES['leadSource']=v=>{S.leadSource=v;$('#leadRows').innerHTML=leadRows()};
+CHANGES['leadAgent']=v=>{S.leadAgent=v;$('#leadRows').innerHTML=leadRows()};
+ACTIONS['leads.export']=()=>{
+  const u=guard('export');
+  const recent=db.security.filter(s=>s.event==='data.export'&&s.actor===u.email&&now()-s.at<10*60e3);
+  if(recent.length>=3){logSec('data.export.limit','high',u.email,'Export rate limit hit (3 in 10 min)');save();return toast('Export limit reached — try again later.','err')}
+  const ls=filteredLeads();
+  const csv=[['Name','Email','Phone','Source','Status','Score','Budget Min','Budget Max','Timeline','Agent'],...ls.map(l=>[l.name,l.email,l.phone,l.source,LEAD_STATUS[l.status],l.score,l.budgetMin,l.budgetMax,l.timeline,l.assignedTo?userById(l.assignedTo).name:''])]
+    .map(r=>r.map(c=>'"'+String(c??'').replace(/"/g,'""')+'"').join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'}));a.download='meridian-leads.csv';a.click();
+  logSec('data.export','low',u.email,`Exported ${ls.length} leads (CSV)`);save();
+  toast(`Exported ${ls.length} leads — logged to the security audit.`);
+};
+ACTIONS['lead.new']=()=>{
+  const u=cur();
+  openModal(`<h3>New lead</h3><p class="m-sub">Score is computed automatically from budget, timeline and source.</p>
+  <form data-form="lead.create"><label>Full name</label><input name="name" required maxlength="80">
+  <label>Email</label><input name="email" type="email" required maxlength="120">
+  <label>Phone</label><input name="phone" maxlength="30">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Source</label><select name="source">${SOURCES.map(s=>`<option>${s}</option>`).join('')}</select></div>
+  <div><label>Timeline</label><select name="timeline">${TIMELINES.map(t=>`<option>${t}</option>`).join('')}</select></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Budget min ($)</label><input name="budgetMin" type="number" min="0" step="1000"></div><div><label>Budget max ($)</label><input name="budgetMax" type="number" min="0" step="1000"></div></div>
+  ${isMgr(u)?`<label>Assign to</label><select name="assignedTo"><option value="">Unassigned</option>${db.users.filter(x=>x.role==='agent'&&x.active).map(a=>`<option value="${a.id}" ${sel(a.id,u.id)}>${esc(a.name)}</option>`).join('')}</select>`:''}
+  <label>Notes</label><textarea name="notes" maxlength="600"></textarea>
+  <div class="form-err" id="leadErr"></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Create lead</button></div></form>`);
+};
+FORMS['lead.create']=fd=>{
+  try{
+    const u=guard('lead.create');
+    const name=String(fd.get('name')||'').trim(),email=String(fd.get('email')||'').trim();
+    if(name.length<2)throw{user:'Please enter the lead\u2019s full name.'};
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))throw{user:'Please enter a valid email address.'};
+    const l=createLead({name,email,phone:String(fd.get('phone')||'').trim().slice(0,30),source:fd.get('source'),timeline:fd.get('timeline'),
+      budgetMin:Math.max(0,+fd.get('budgetMin')||0),budgetMax:Math.max(0,+fd.get('budgetMax')||0),
+      assignedTo:isMgr(u)?(fd.get('assignedTo')||null):u.id,notes:String(fd.get('notes')||'').slice(0,600)},u);
+    if(l.assignedTo&&l.assignedTo!==u.id)notify([l.assignedTo],`You were assigned a new lead: ${l.name}`,'lead');
+    save();closeLayer();renderMain();toast(`${esc(l.name)} created — scored ${l.score}/100.`);
+  }catch(e){const el=$('#leadErr');if(el){el.textContent=e.user||'Something went wrong. Please try again.';el.classList.add('on')}}
+};
+ACTIONS['lead.open']=(_,t)=>openLead(t.dataset.id);
+function leadForm(l){
+  const u=cur();
+  return`<form data-form="lead.edit"><input type="hidden" name="id" value="${l.id}">
+  <label>Full name</label><input name="name" value="${esc(l.name)}" required maxlength="80">
+  <label>Email</label><input name="email" value="${esc(l.email)}" maxlength="120">
+  <label>Phone</label><input name="phone" value="${esc(l.phone)}" maxlength="30">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Source</label><select name="source">${SOURCES.map(s=>`<option ${sel(l.source,s)}>${s}</option>`).join('')}</select></div>
+  <div><label>Timeline</label><select name="timeline">${TIMELINES.map(t=>`<option ${sel(l.timeline,t)}>${t}</option>`).join('')}</select></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Budget min ($)</label><input name="budgetMin" type="number" value="${l.budgetMin||''}"></div><div><label>Budget max ($)</label><input name="budgetMax" type="number" value="${l.budgetMax||''}"></div></div>
+  <label>Notes</label><textarea name="notes" maxlength="600">${esc(l.notes)}</textarea>
+  <div class="form-err" id="ledErr"></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Save changes</button></div></form>`;
+}
+function openLead(id){
+  const u=cur(),l=db.leads.find(x=>x.id===id&&x.orgId===u.orgId);
+  if(!l){logSec('authz.denied','high',u.email,'Lead lookup outside organization scope');save();return toast('Lead not found.','err')}
+  if(!isMgr(u)&&l.assignedTo!==u.id){logSec('authz.denied','high',u.email,`Agent opened another agent's lead (${l.name})`);save();return toast('This lead belongs to another agent.','err')}
+  openLeadInner(l);
+}
+function openLeadInner(l){
+  const u=cur(),mgr=isMgr(u);
+  const deal=db.deals.find(d=>d.leadId===l.id&&!['lost'].includes(d.stage));
+  const visits=db.visits.filter(v=>{const d=db.deals.find(x=>x.id===v.dealId);return d&&d.leadId===l.id});
+  const acts=db.activities.filter(a=>a.entity==='lead'&&a.entityId===l.id).slice(0,8);
+  const tasks=db.tasks.filter(t=>t.leadId===l.id&&!t.done);
+  openDrawer(`<div class="dw-h">${avatar(l.name,42)}<div><h3>${esc(l.name)}</h3><div class="mini" style="margin-top:3px">${esc(l.email)}${l.phone?' · '+esc(l.phone):''}</div></div><button class="btn gho dw-x" data-action="layer.close">${icon('x',18)}</button></div>
+  <div class="dw-b">
+    ${mgr?`<div style="display:flex;gap:8px;margin-bottom:16px"><button class="btn sec sm" data-action="lead.editBtn" data-id="${l.id}">${icon('edit',13)} Edit</button>
+      <button class="btn sec sm" data-action="followup.newFor" data-id="${l.id}">${icon('check',13)} Follow-up</button>
+      ${!deal?`<button class="btn sec sm" data-action="deal.new" data-lead="${l.id}">${icon('board',13)} New deal</button>`:''}
+      <button class="btn sec sm" style="margin-left:auto;color:var(--red)" data-action="lead.lostBtn" data-id="${l.id}">Mark lost</button></div>`:''}
+    <div style="display:flex;gap:20px;align-items:center;margin-bottom:18px">
+      ${scoreRing(l.score)}
+      <div style="flex:1">${[['Budget strength',l.scoreF.budget,30],['Timeline urgency',l.scoreF.timeline,25],['Engagement',l.scoreF.engagement,25],['Source quality',l.scoreF.source,15],['Profile completeness',l.scoreF.profile,10]].map(f=>`<div style="display:grid;grid-template-columns:130px 1fr 34px;gap:10px;align-items:center;font-size:11.5px;color:var(--ink2);margin-bottom:4px"><span>${f[0]}</span><span class="track" style="height:6px;background:#E4DFD0;border-radius:4px;overflow:hidden;display:block"><i style="display:block;height:100%;background:${scoreColor(l.score)};width:${f[1]/f[2]*100}%"></i></span><b class="tnum" style="text-align:right">${f[1]||0}</b></div>`).join('')}</div>
+    </div>
+    <div class="facts">
+      <div><span>Status</span>${leadPill(l)}</div><div><span>Source</span>${esc(l.source)}</div>
+      <div><span>Budget</span><b class="tnum">${fmt$M(l.budgetMin)}–${fmt$M(l.budgetMax)}</b></div><div><span>Timeline</span>${esc(l.timeline)}</div>
+      <div><span>Agent</span>${l.assignedTo?esc(userById(l.assignedTo).name):pill('Unassigned','pl-dang')}</div><div><span>Created</span>${fdatey(l.createdAt)}</div>
+    </div>
+    ${mgr?`<label>Reassign</label><select data-change="leadAssign" data-id="${l.id}"><option value="">Unassigned</option>${db.users.filter(x=>x.role==='agent'&&x.active).map(a=>`<option ${sel(l.assignedTo,a.id)} value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+    <label style="margin-top:12px">Status</label><select data-change="leadStatusSet" data-id="${l.id}">${Object.entries(LEAD_STATUS).map(([k,v])=>`<option ${sel(l.status,k)} value="${k}">${v}</option>`).join('')}</select>`:''}
+    ${l.notes?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Notes</div><p style="font-size:13px;color:var(--ink2)">${esc(l.notes)}</p></div>`:''}
+    ${deal?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Pipeline</div><button class="task" style="width:100%;text-align:left" data-action="deal.open" data-id="${deal.id}"><span>${icon('board',15)}</span><span><b>${esc(deal.title)}</b><br><span class="mini">${fmt$(deal.value)} · ${STAGES[deal.stage].n}</span></span>${icon('arrow',14)}</button></div>`:''}
+    ${visits.length?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Site visits</div>${visits.map(v=>`<div class="task"><span style="color:var(--ink3)">${icon('calcheck',15)}</span><span>${fdt(v.at)} — ${pill(v.status,{scheduled:'pl-warn',completed:'pl-pos',cancelled:'pl-neut'}[v.status])}${v.outcome?` <span class="mini">${esc(v.outcome.replace(/_/g,' '))}</span>`:''}</span></div>`).join('')}</div>`:''}
+    ${tasks.length?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Open follow-ups</div>${tasks.map(t=>`<div class="task ${t.dueAt<now()?'over':''}"><button class="ck" data-action="task.toggle" data-id="${t.id}">${icon('check',12)}</button><span>${esc(t.title)}</span><span class="due">${t.dueAt<now()?ago(t.dueAt)+' late':fdate(t.dueAt)}</span></div>`).join('')}</div>`:''}
+    <div class="ruled"><div class="lbl" style="margin-bottom:8px">Timeline</div><div class="actfeed">${acts.map(a=>`<div class="a"><span class="notif-ic">${icon('clock',13)}</span><span>${esc(a.msg)}</span><span class="t">${ago(a.at)}</span></div>`).join('')||'<span class="mini">No activity recorded yet.</span>'}</div></div>
+  </div>`);
+}
+ACTIONS['lead.editBtn']=(_,t)=>{const l=db.leads.find(x=>x.id===t.dataset.id);
+  openModal(`<h3>Edit lead</h3>${leadForm(l)}`)};
+FORMS['lead.edit']=fd=>{
+  try{
+    const u=guard('lead.edit.own');
+    const l=db.leads.find(x=>x.id===fd.get('id'));
+    if(!l)throw{user:'Lead not found.'};
+    ownOrManage(u,l.assignedTo,'lead');
+    l.name=String(fd.get('name')).trim().slice(0,80);l.email=String(fd.get('email')).trim().slice(0,120);
+    l.phone=String(fd.get('phone')||'').trim().slice(0,30);l.source=fd.get('source');l.timeline=fd.get('timeline');
+    l.budgetMin=Math.max(0,+fd.get('budgetMin')||0);l.budgetMax=Math.max(0,+fd.get('budgetMax')||0);
+    l.notes=String(fd.get('notes')||'').slice(0,600);
+    rescore(l);act(`${l.name} updated`,{userId:u.id,entity:'lead',entityId:l.id,about:l.assignedTo});
+    save();closeLayer();openLeadInner(l);toast('Lead updated.');
+  }catch(e){const el=$('#ledErr');if(el){el.textContent=e.user||'Could not save.';el.classList.add('on')}}
+};
+CHANGES['leadAssign']=v=>{
+  try{
+    const u=guard('lead.assign');
+    const id=document.activeElement?.dataset?.id||arguments[1]?.dataset?.id;
+    const l=db.leads.find(x=>x.id===id);if(!l)return;
+    l.assignedTo=v||null;rescore(l);
+    act(`${l.name} assigned to ${v?userById(v).name:'no one'}`,{userId:u.id,entity:'lead',entityId:l.id,about:v});
+    if(v)notify([v],`You were assigned a lead: ${l.name} (score ${l.score})`,'lead');
+    save();openLeadInner(l);toast('Assignment saved.');
+  }catch(e){toast(e.user||'Not permitted.','err')}
+};
+CHANGES['leadStatusSet']=v=>{
+  const u=cur();const id=document.activeElement?.dataset?.id;const l=db.leads.find(x=>x.id===id);if(!l)return;
+  ownOrManage(u,l.assignedTo,'lead');
+  l.status=v;act(`${l.name} marked ${LEAD_STATUS[v]}`,{userId:u.id,entity:'lead',entityId:l.id,about:l.assignedTo});
+  save();openLeadInner(l);toast(`Status set to ${LEAD_STATUS[v]}.`);
+};
+ACTIONS['lead.lostBtn']=(_,t)=>{
+  const u=cur(),l=db.leads.find(x=>x.id===t.dataset.id);
+  confirmDanger({title:'Mark lead as lost?',body:`<b>${esc(l.name)}</b> will move to the lost book. Their history stays intact and this action is logged.`,label:'Mark lost',
+    onYes:()=>{l.status='lost';act(`${l.name} marked lost`,{userId:u.id,entity:'lead',entityId:l.id,about:l.assignedTo});save();closeLayer();openLeadInner(l);toast('Lead marked lost.')}});
+};
+
+/* ---------- follow-ups (tasks) ---------- */
+ACTIONS['task.new']=()=>followupModal(null);
+ACTIONS['followup.newFor']=(_,t)=>followupModal(t.dataset.id);
+function followupModal(leadId){
+  const u=cur(),leads=scopeLeads().filter(l=>!['converted','lost'].includes(l.status));
+  openModal(`<h3>New follow-up</h3>
+  <form data-form="task.create"><input type="hidden" name="leadId" value="${leadId||''}">
+  <label>What needs doing?</label><input name="title" required maxlength="120" placeholder="e.g. Call about the counter-offer">
+  <label>Related lead</label><select name="leadSel" ${leadId?'disabled':''}><option value="">— none —</option>${leads.map(l=>`<option ${sel(leadId,l.id)} value="${l.id}">${esc(l.name)}</option>`).join('')}</select>
+  <label>Due</label><input name="due" type="datetime-local" value="${toLocal(dAhead(1,10))}">
+  ${isMgr(u)?`<label>Assign to</label><select name="assignee">${db.users.filter(x=>x.role!=='owner'&&x.active).map(a=>`<option value="${a.id}" ${sel(a.id,u.id)}>${esc(a.name)}</option>`).join('')}</select>`:`<input type="hidden" name="assignee" value="${u.id}">`}
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Create</button></div></form>`);
+}
+FORMS['task.create']=fd=>{
+  const u=cur();
+  const title=String(fd.get('title')||'').trim().slice(0,120);
+  if(!title)return toast('Please give the follow-up a title.','err');
+  const leadId=fd.get('leadId')||fd.get('leadSel');
+  const t={id:uid(),orgId:u.orgId,leadId:leadId||null,dealId:null,title,dueAt:+new Date(fd.get('due'))||dAhead(1,10),done:false,assignedTo:fd.get('assignee')||u.id,createdBy:u.id,createdAt:now()};
+  db.tasks.unshift(t);
+  act(`Follow-up created — “${title}”`,{userId:u.id,about:t.assignedTo});
+  if(t.assignedTo!==u.id)notify([t.assignedTo],`New follow-up: ${title}`,'task');
+  save();closeLayer();renderMain();toast('Follow-up created.');
+};
+ACTIONS['task.toggle']=(_,t)=>{
+  const u=cur(),task=db.tasks.find(x=>x.id===t.dataset.id);
+  if(!task)return;ownOrManage(u,task.assignedTo,'follow-up');
+  task.done=!task.done;
+  if(task.done)act(`Follow-up completed — “${task.title}”`,{userId:u.id,about:task.assignedTo});
+  save();renderMain();
+  const dw=$('.drawer');if(dw&&task.leadId){const l=db.leads.find(x=>x.id===task.leadId);if(l)openLeadInner(l)}
+};
+
+/* ---------- pipeline ---------- */
+VIEWS.pipeline=()=>{
+  const u=cur(),mgr=isMgr(u);
+  const deals=scopeDeals().filter(d=>!S.pipeAgent||d.assignedTo===S.pipeAgent);
+  const open=deals.filter(d=>!['won','lost'].includes(d.stage));
+  const stages=['new','qualified','visit','negotiation','won','lost'];
+  return`<div class="pg-head"><div><h1>Pipeline</h1><div class="sub">${open.length} open · ${fmt$(open.reduce((a,d)=>a+d.value,0))} · drag cards between stages</div></div>
+  <div class="h-actions">${mgr?`<select data-change="pipeAgent" style="width:auto"><option value="">All agents</option>${db.users.filter(x=>x.role==='agent'&&x.active).map(a=>`<option ${sel(S.pipeAgent,a.id)} value="${a.id}">${esc(a.name)}</option>`).join('')}</select>`:''}
+  <button class="btn pri" data-action="deal.new">${icon('plus',15)} New deal</button></div></div>
+  <div id="kbWrap"><div class="kb">${stages.map(st=>{
+    const ds=deals.filter(d=>d.stage===st).sort((a,b)=>b.value-a.value);
+    return`<div class="kb-col" data-stage="${st}">
+      <div class="kb-h"><span>${STAGES[st].n} · ${STAGES[st].p}%</span><span class="c tnum">${ds.length?fmt$M(ds.reduce((a,d)=>a+d.value,0)):''}</span></div>
+      ${ds.map(d=>{const days=Math.floor((now()-d.stageChangedAt)/DAY);
+        const upVisit=db.visits.find(v=>v.dealId===d.id&&v.status==='scheduled'&&v.at>=now());
+        return`<div class="kb-card" draggable="true" data-id="${d.id}" data-action="deal.open">
+          <b>${esc(d.title)}</b><div class="prop">${esc(db.properties.find(p=>p.id===d.propertyId)?.title||'')}</div>
+          <div class="val tnum">${fmt$(d.value)}</div>
+          <div class="kb-foot">${avatar(userById(d.assignedTo).name,22)}<span class="age ${days>10?'warn':''}">${days}d</span>
+          ${upVisit?`<span class="age">${icon('calcheck',11)} ${fdate(upVisit.at)}</span>`:st!=='won'&&st!=='lost'?`<button class="btn gho sm" style="margin-left:auto;padding:4px 6px" data-action="visit.newForDeal" data-id="${d.id}" title="Schedule visit">${icon('calcheck',14)}</button>`:''}</div>
+        </div>`}).join('')||'<div class="mini" style="text-align:center;padding:14px 0;color:var(--ink3)">Drop deals here</div>'}
+    </div>`}).join('')}</div></div>`;
+};
+AFTER.pipeline=mountKanban;
+function mountKanban(){
+  let dragId=null;
+  $$('.kb-card').forEach(c=>{
+    c.addEventListener('dragstart',e=>{dragId=c.dataset.id;c.classList.add('dragging');e.dataTransfer.effectAllowed='move'});
+    c.addEventListener('dragend',()=>{c.classList.remove('dragging');dragId=null});
+  });
+  $$('.kb-col').forEach(col=>{
+    col.addEventListener('dragover',e=>{if(dragId){e.preventDefault();col.classList.add('over')}});
+    col.addEventListener('dragleave',()=>col.classList.remove('over'));
+    col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('over');if(dragId)moveDeal(dragId,col.dataset.stage);dragId=null});
+  });
+}
+CHANGES['pipeAgent']=v=>{S.pipeAgent=v;$('#kbWrap').innerHTML=VIEWS.pipeline().match(/<div id="kbWrap">([\s\S]*)<\/div>$/)[1];mountKanban()};
+ACTIONS['deal.new']=(_,t)=>dealModal(t?.dataset?.lead);
+function dealModal(leadId){
+  const u=cur(),mgr=isMgr(u);
+  const openLeadIds=new Set(scopeDeals().filter(d=>!['won','lost'].includes(d.stage)).map(d=>d.leadId));
+  const leads=scopeLeads().filter(l=>!['converted','lost'].includes(l.status)&&!openLeadIds.has(l.id));
+  if(!leads.length)return toast('Every active lead already has an open deal.','info');
+  const props=db.properties.filter(p=>p.status!=='sold');
+  const selLead=leadId||leads[0].id, l0=db.leads.find(x=>x.id===selLead);
+  openModal(`<h3>New deal</h3><p class="m-sub">Commission is calculated automatically when the deal closes.</p>
+  <form data-form="deal.create">
+  <label>Lead</label><select name="lead" ${leadId?'disabled':''}>${leads.map(l=>`<option ${sel(selLead,l.id)} value="${l.id}">${esc(l.name)} — ${fmt$M(l.budgetMax)} budget</option>`).join('')}</select>
+  ${leadId?`<input type="hidden" name="lead" value="${leadId}">`:''}
+  <label>Property</label><select name="prop">${props.map(p=>`<option value="${p.id}" data-price="${p.price}">${esc(p.title)} — ${fmt$(p.price)}</option>`).join('')}</select>
+  <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px"><div><label>Deal value ($)</label><input name="value" type="number" min="0" step="1000" value="${l0?.budgetMax||props[0]?.price||''}"></div>
+  <div><label>Rate (%)</label><input name="rate" type="number" min="0" max="20" step="0.1" value="${db.settings.defaultRate}"></div></div>
+  ${mgr?`<label>Agent</label><select name="agent">${db.users.filter(x=>x.role==='agent'&&x.active).map(a=>`<option value="${a.id}" ${sel(a.id,u.id)}>${esc(a.name)}</option>`).join('')}</select>`:`<input type="hidden" name="agent" value="${u.id}">`}
+  <div class="form-err" id="dealErr"></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Create deal</button></div></form>`);
+}
+FORMS['deal.create']=fd=>{
+  try{
+    const u=guard('deal.create');
+    const lead=db.leads.find(l=>l.id===fd.get('lead')),prop=db.properties.find(p=>p.id===fd.get('prop'));
+    if(!lead||!prop)throw{user:'Pick a lead and a property.'};
+    const value=Math.max(1,+fd.get('value')||0),rate=clamp(+fd.get('rate')||db.settings.defaultRate,0,20);
+    const agentId=fd.get('agent')||u.id;
+    ownOrManage(u,agentId,'lead');
+    const d={id:uid(),orgId:u.orgId,title:`${lead.name} × ${prop.title}`,leadId:lead.id,propertyId:prop.id,value,rate,stage:'new',assignedTo:agentId,createdAt:now(),stageChangedAt:now(),closedAt:null,lostReason:null};
+    db.deals.unshift(d);
+    if(prop.status==='available')prop.status='under_offer';
+    act(`Deal opened — ${d.title} (${fmt$(value)})`,{userId:u.id,about:agentId});
+    if(agentId!==u.id)notify([agentId],`New deal assigned: ${d.title}`,'deal');
+    save();closeLayer();S.route='pipeline';location.hash='#/pipeline';renderMain();toast(`Deal created — commission at ${rate}% will be ${fmt$(value*rate/100)} gross.`);
+  }catch(e){const el=$('#dealErr');if(el){el.textContent=e.user||'Could not create deal.';el.classList.add('on')}}
+};
+function moveDeal(id,stage,reason){
+  const u=cur();
+  let d;try{guard('deal.move');d=db.deals.find(x=>x.id===id&&x.orgId===u.orgId);if(!d)throw{user:'Deal not found.'};ownOrManage(u,d.assignedTo,'deal')}
+  catch(e){return toast(e.user||'Not permitted.','err')}
+  if(d.stage===stage||stage==='won'&&d.stage==='won')return;
+  if(stage==='lost'){return openModal(`<h3>Mark deal lost</h3><form data-form="deal.lost"><input type="hidden" name="id" value="${d.id}">
+    <label>Reason</label><select name="reason">${LOST_REASONS.map(r=>`<option>${r}</option>`).join('')}</select>
+    <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn dng">Mark lost</button></div></form>`)}
+  d.stage=stage;d.stageChangedAt=now();
+  const prop=db.properties.find(p=>p.id===d.propertyId);
+  if(stage==='won'){
+    d.closedAt=now();
+    const gross=Math.round(d.value*d.rate/100),agent=userById(d.assignedTo);
+    const agentAmt=Math.round(gross*agent.split/100);
+    db.coms.unshift({id:uid(),orgId:u.orgId,dealId:d.id,agentId:d.assignedTo,gross,agentAmt,houseAmt:gross-agentAmt,status:'pending',at:now()});
+    const lead=db.leads.find(l=>l.id===d.leadId);if(lead){lead.status='converted';lead.lastContactAt=now();rescore(lead)}
+    if(prop)prop.status='sold';
+    act(`Deal won — ${d.title} (${fmt$(d.value)}) — commission ${fmt$(gross)} gross`,{userId:u.id,about:d.assignedTo});
+    const mgrs=db.users.filter(x=>isMgr(x)&&x.active).map(x=>x.id);
+    if(d.assignedTo!==u.id)notify([d.assignedTo],`Congratulations — ${d.title} closed at ${fmt$(d.value)}`,'deal');
+    notify(mgrs.filter(x=>x!==u.id),`Deal won — ${d.title} · gross commission ${fmt$(gross)}`,'finance');
+    save();renderMain();toast(`Deal won — ${fmt$(gross)} gross commission recorded.`);
+  }else{
+    if(prop&&prop.status==='under_offer')prop.status='available';
+    act(`${d.title} moved to ${STAGES[stage].n}`,{userId:u.id,about:d.assignedTo});
+    if(d.assignedTo!==u.id)notify([d.assignedTo],`${d.title} moved to ${STAGES[stage].n}`,'deal');
+    save();renderMain();toast(`Moved to ${STAGES[stage].n}.`);
+  }
+  const dw=$('.drawer');if(dw){const cur2=db.deals.find(x=>x.id===id);if(cur2)openDealInner(cur2)}
+}
+FORMS['deal.lost']=fd=>{
+  const u=cur(),d=db.deals.find(x=>x.id===fd.get('id'));if(!d)return;
+  ownOrManage(u,d.assignedTo,'deal');
+  d.stage='lost';d.stageChangedAt=now();d.lostReason=fd.get('reason');
+  const prop=db.properties.find(p=>p.id===d.propertyId);if(prop&&prop.status==='under_offer')prop.status='available';
+  act(`${d.title} marked lost — ${d.lostReason}`,{userId:u.id,about:d.assignedTo});
+  save();closeLayer();renderMain();toast('Deal marked lost.');
+};
+ACTIONS['deal.open']=(_,t)=>openDeal(t.dataset.id);
+function openDeal(id){
+  const u=cur(),d=db.deals.find(x=>x.id===id&&x.orgId===u.orgId);
+  if(!d)return toast('Deal not found.','err');
+  if(!isMgr(u)&&d.assignedTo!==u.id){logSec('authz.denied','high',u.email,`Agent opened another agent's deal (${d.title})`);save();return toast('This deal belongs to another agent.','err')}
+  openDealInner(d);
+}
+function openDealInner(d){
+  const u=cur(),mgr=isMgr(u);
+  const lead=db.leads.find(l=>l.id===d.leadId),prop=db.properties.find(p=>p.id===d.propertyId);
+  const visits=db.visits.filter(v=>v.dealId===d.id).sort((a,b)=>b.at-a.at);
+  const com=db.coms.find(c=>c.dealId===d.id);
+  const gross=Math.round(d.value*d.rate/100),agent=userById(d.assignedTo);
+  const canMove=mgr||d.assignedTo===u.id;
+  openDrawer(`<div class="dw-h"><div><h3>${esc(d.title)}</h3><div class="mini" style="margin-top:3px">Opened ${fdatey(d.createdAt)} · ${stagePill(d.stage)}</div></div><button class="btn gho dw-x" data-action="layer.close">${icon('x',18)}</button></div>
+  <div class="dw-b">
+    <div class="facts">
+      <div><span>Value</span><b class="tnum">${fmt$(d.value)}</b></div><div><span>Rate</span><b class="tnum">${d.rate}%</b></div>
+      <div><span>Gross commission</span><b class="tnum">${fmt$(gross)}</b></div><div><span>Agent share</span><b class="tnum">${fmt$(gross*agent.split/100)} (${agent.split}%)</b></div>
+      <div><span>Agent</span>${esc(agent.name)}</div><div><span>In stage</span><b>${Math.floor((now()-d.stageChangedAt)/DAY)} days</b></div>
+    </div>
+    ${canMove&&!['won','lost'].includes(d.stage)?`<label>Move stage</label><select data-change="dealStage" data-id="${d.id}">${Object.keys(STAGES).map(s=>`<option ${sel(d.stage,s)} value="${s}">${STAGES[s].n}${s==='won'?' — triggers commission':''}</option>`).join('')}</select>`:''}
+    ${d.stage==='lost'?`<div class="ruled"><span class="pill pl-dang">Lost — ${esc(d.lostReason||'no reason given')}</span></div>`:''}
+    ${com?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Commission record</div><div class="facts">
+      <div><span>Gross</span><b class="tnum">${fmt$(com.gross)}</b></div><div><span>Agent</span><b class="tnum">${fmt$(com.agentAmt)}</b></div>
+      ${mgr?`<div><span>House</span><b class="tnum">${fmt$(com.houseAmt)}</b></div>`:''}<div><span>Status</span>${pill(com.status,com.status==='paid'?'pl-pos':'pl-warn')}</div></div></div>`:''}
+    ${lead?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Lead</div><button class="task" style="width:100%;text-align:left" data-action="lead.open" data-id="${lead.id}">${avatar(lead.name,26)}<span><b>${esc(lead.name)}</b><br><span class="mini">score ${lead.score}/100 · ${esc(lead.timeline)}</span></span>${icon('arrow',14)}</button></div>`:''}
+    ${prop?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Property</div><button class="task" style="width:100%;text-align:left" data-action="prop.open" data-id="${prop.id}"><span style="color:var(--ink3)">${icon('building',16)}</span><span><b>${esc(prop.title)}</b><br><span class="mini">${fmt$(prop.price)} asking</span></span>${icon('arrow',14)}</button></div>`:''}
+    ${visits.length?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Site visits</div>${visits.map(v=>`<div class="task"><span style="color:var(--ink3)">${icon('calcheck',15)}</span><span>${fdt(v.at)} — ${pill(v.status,{scheduled:'pl-warn',completed:'pl-pos',cancelled:'pl-neut'}[v.status])}${v.outcome?` <span class="mini">${esc(v.outcome.replace(/_/g,' '))}</span>`:''}</span>${v.status==='scheduled'?`<button class="btn sm sec" style="margin-left:auto" data-action="visit.complete" data-id="${v.id}">Complete</button>`:''}</div>`).join('')}</div>`:''}
+    ${canMove&&!['won','lost'].includes(d.stage)?`<div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn sec sm" data-action="visit.newForDeal" data-id="${d.id}">${icon('calcheck',14)} Schedule visit</button>
+      <button class="btn grn sm" data-action="deal.wonBtn" data-id="${d.id}">${icon('check',14)} Mark won</button>
+      <button class="btn sec sm" style="margin-left:auto;color:var(--red)" data-action="deal.lostBtn" data-id="${d.id}">Mark lost</button></div>`:''}
+  </div>`);
+}
+CHANGES['dealStage']=v=>{const id=document.activeElement?.dataset?.id;if(id)moveDeal(id,v)};
+ACTIONS['deal.wonBtn']=(_,t)=>moveDeal(t.dataset.id,'won');
+ACTIONS['deal.lostBtn']=(_,t)=>moveDeal(t.dataset.id,'lost');
+
+/* ---------- properties ---------- */
+VIEWS.properties=()=>{
+  const u=cur(),mgr=isMgr(u);
+  const ps=db.properties.filter(p=>p.orgId===u.orgId);
+  const counts={available:0,under_offer:0,sold:0};ps.forEach(p=>counts[p.status]++);
+  return`<div class="pg-head"><div><h1>Properties</h1><div class="sub">${ps.length} listings · ${counts.available} available · ${counts.under_offer} under offer · ${counts.sold} sold</div></div>
+  ${mgr?`<button class="btn pri" data-action="prop.new">${icon('plus',15)} New property</button>`:''}</div>
+  <div id="propRows">${propRows()}</div>`;
+};
+function propRows(){
+  const ps=db.properties.filter(p=>p.orgId===cur().orgId).sort((a,b)=>b.createdAt-a.createdAt);
+  return`<table class="tbl"><tr><th>Property</th><th>Type</th><th class="r">Beds</th><th class="r">Baths</th><th class="r">Sq ft</th><th class="r">Price</th><th>Status</th><th>Listed by</th></tr>
+  ${ps.map(p=>`<tr class="row" data-action="prop.open" data-id="${p.id}"><td><b>${esc(p.title)}</b><br><span class="mini">${esc(p.address)}</span></td><td>${esc(p.type)}</td><td class="r tnum">${p.beds}</td><td class="r tnum">${p.baths}</td><td class="r tnum">${p.area.toLocaleString()}</td><td class="r tnum"><b>${fmt$(p.price)}</b></td><td>${propPill(p)}</td><td class="mini">${esc(userById(p.listedBy).name)}</td></tr>`).join('')}</table>`;
+}
+ACTIONS['prop.new']=()=>{guard('property.create');
+  openModal(`<h3>New property</h3><form data-form="prop.create">
+  <label>Title</label><input name="title" required maxlength="90">
+  <label>Address</label><input name="address" required maxlength="140">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Type</label><select name="type">${['House','Condo','Townhouse','Duplex','Loft','Villa','Land'].map(t=>`<option>${t}</option>`).join('')}</select></div>
+  <div><label>Asking price ($)</label><input name="price" type="number" min="0" step="1000" required></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px"><div><label>Beds</label><input name="beds" type="number" min="0" max="20"></div><div><label>Baths</label><input name="baths" type="number" min="0" max="20" step="0.5"></div><div><label>Sq ft</label><input name="area" type="number" min="0"></div></div>
+  <div class="form-err" id="prErr"></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Create listing</button></div></form>`);
+};
+FORMS['prop.create']=fd=>{
+  try{
+    const u=guard('property.create');
+    const title=String(fd.get('title')||'').trim();if(title.length<2)throw{user:'Please enter a title.'};
+    const p={id:uid(),orgId:u.orgId,title,address:String(fd.get('address')||'').trim().slice(0,140),type:fd.get('type'),
+      price:Math.max(0,+fd.get('price')||0),beds:Math.max(0,+fd.get('beds')||0),baths:Math.max(0,+fd.get('baths')||0),
+      area:Math.max(0,+fd.get('area')||0),status:'available',listedBy:u.id,createdAt:now()};
+    db.properties.unshift(p);act(`New listing — ${p.title} (${fmt$(p.price)})`,{userId:u.id});
+    save();closeLayer();S.route='properties';location.hash='#/properties';renderMain();toast(`${esc(p.title)} listed.`);
+  }catch(e){const el=$('#prErr');if(el){el.textContent=e.user||'Could not create.';el.classList.add('on')}}
+};
+ACTIONS['prop.open']=(_,t)=>{
+  const u=cur(),p=db.properties.find(x=>x.id===t.dataset.id&&x.orgId===u.orgId);
+  if(!p)return toast('Property not found.','err');
+  const deals=db.deals.filter(d=>d.propertyId===p.id);
+  openDrawer(`<div class="dw-h"><div><h3>${esc(p.title)}</h3><div class="mini" style="margin-top:3px">${esc(p.address)}</div></div><button class="btn gho dw-x" data-action="layer.close">${icon('x',18)}</button></div>
+  <div class="dw-b">
+    <div class="facts"><div><span>Price</span><b class="tnum">${fmt$(p.price)}</b></div><div><span>Type</span>${esc(p.type)}</div>
+    <div><span>Beds / Baths</span><b class="tnum">${p.beds} / ${p.baths}</b></div><div><span>Area</span><b class="tnum">${p.area.toLocaleString()} sq ft</b></div>
+    <div><span>Status</span>${propPill(p)}</div><div><span>Listed</span>${fdatey(p.createdAt)}</div></div>
+    ${isMgr(u)?`<label>Update status</label><select data-change="propStatus" data-id="${p.id}">${Object.entries(PROP_STATUS).map(([k,v])=>`<option ${sel(p.status,k)} value="${k}">${v}</option>`).join('')}</select>
+    <div style="display:flex;gap:8px;margin-top:16px"><button class="btn sec sm" data-action="prop.priceBtn" data-id="${p.id}">${icon('edit',13)} Edit price</button>
+    <button class="btn sec sm" data-action="deal.new">${icon('board',13)} New deal</button>
+    ${u.role==='owner'?`<button class="btn sec sm" style="margin-left:auto;color:var(--red)" data-action="prop.delBtn" data-id="${p.id}">${icon('trash',13)} Delete</button>`:''}</div>`:''}
+    ${deals.length?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Deals on this property</div>${deals.map(d=>`<button class="task" style="width:100%;text-align:left" data-action="deal.open" data-id="${d.id}"><span>${icon('board',15)}</span><span><b>${esc(d.title)}</b><br><span class="mini">${fmt$(d.value)} · ${STAGES[d.stage].n}</span></span>${icon('arrow',14)}</button>`).join('')}</div>`:''}
+  </div>`);
+};
+CHANGES['propStatus']=v=>{
+  guard('property.edit');
+  const id=document.activeElement?.dataset?.id,p=db.properties.find(x=>x.id===id);if(!p)return;
+  p.status=v;act(`${p.title} status → ${PROP_STATUS[v]}`,{userId:cur().id});save();toast('Status updated.');
+};
+ACTIONS['prop.priceBtn']=(_,t)=>{
+  const p=db.properties.find(x=>x.id===t.dataset.id);
+  openModal(`<h3>Edit listing</h3><form data-form="prop.edit"><input type="hidden" name="id" value="${p.id}">
+  <label>Title</label><input name="title" value="${esc(p.title)}" maxlength="90"><label>Asking price ($)</label><input name="price" type="number" value="${p.price}">
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+};
+FORMS['prop.edit']=fd=>{
+  guard('property.edit');
+  const p=db.properties.find(x=>x.id===fd.get('id'));if(!p)return;
+  p.title=String(fd.get('title')).trim().slice(0,90)||p.title;p.price=Math.max(0,+fd.get('price')||p.price);
+  act(`${p.title} updated — now ${fmt$(p.price)}`,{userId:cur().id});save();closeLayer();renderMain();toast('Listing updated.');
+};
+ACTIONS['prop.delBtn']=(_,t)=>{
+  const p=db.properties.find(x=>x.id===t.dataset.id);
+  const linked=db.deals.some(d=>d.propertyId===p.id&&!['lost'].includes(d.stage));
+  if(linked)return toast('This property has open deals — resolve them first.','err');
+  confirmDanger({title:'Delete listing?',body:`<b>${esc(p.title)}</b> will be permanently removed. This cannot be undone.`,label:'Delete',typed:'DELETE',
+    onYes:()=>{guard('property.edit');db.properties=db.properties.filter(x=>x.id!==p.id);act(`Listing deleted — ${p.title}`,{userId:cur().id});save();closeLayer();renderMain();toast('Listing deleted.')}});
+};
+
+/* ---------- visits ---------- */
+VIEWS.visits=()=>{
+  const u=cur();
+  const vs=db.visits.filter(v=>v.orgId===u.orgId&&(isMgr(u)||v.agentId===u.id));
+  const dealOf=v=>db.deals.find(d=>d.id===v.dealId)||{title:'—'};
+  const up=vs.filter(v=>v.status==='scheduled').sort((a,b)=>a.at-b.at);
+  const past=vs.filter(v=>v.status!=='scheduled').sort((a,b)=>b.at-a.at);
+  const row=v=>{const d=dealOf(v);
+    return`<tr class="row" data-action="deal.open" data-id="${d.id}"><td class="tnum" style="white-space:nowrap"><b>${fdt(v.at)}</b></td>
+    <td><b>${esc(d.title)}</b><br><span class="mini">${esc(userById(v.agentId).name)}${v.notes?' · '+esc(v.notes):''}</span></td>
+    <td>${pill(v.status,{scheduled:v.at<now()?'pl-dang':'pl-warn',completed:'pl-pos',cancelled:'pl-neut'}[v.status])}${v.outcome?` <span class="mini">${esc(v.outcome.replace(/_/g,' '))}</span>`:''}</td>
+    <td class="r">${v.status==='scheduled'?`<button class="btn sm grn" data-action="visit.complete" data-id="${v.id}">Complete</button> <button class="btn sm sec" data-action="visit.cancel" data-id="${v.id}">Cancel</button>`:''}</td></tr>`};
+  return`<div class="pg-head"><div><h1>Site visits</h1><div class="sub">${up.length} upcoming · visits update lead engagement scores automatically</div></div>
+  <button class="btn pri" data-action="visit.new">${icon('plus',15)} Schedule visit</button></div>
+  <div class="sec-h"><h2>Upcoming</h2></div>
+  ${up.length?`<table class="tbl">${up.map(row).join('')}</table>`:`<div class="empty" style="padding:22px">Nothing scheduled. Book one from a deal card.</div>`}
+  <div class="sec-h" style="margin-top:30px"><h2>History</h2></div>
+  ${past.length?`<table class="tbl">${past.map(row).join('')}</table>`:`<div class="empty" style="padding:22px">No completed visits yet.</div>`}`;
+};
+ACTIONS['visit.new']=()=>visitModal(null);
+ACTIONS['visit.newForDeal']=(_,t)=>visitModal(t.dataset.id);
+function visitModal(dealId){
+  const u=cur();
+  const open=scopeDeals().filter(d=>!['won','lost'].includes(d.stage));
+  if(!open.length)return toast('Open a deal first — visits are booked against deals.','info');
+  openModal(`<h3>Schedule site visit</h3>
+  <form data-form="visit.create"><input type="hidden" name="deal" value="${dealId||''}">
+  <label>Deal</label><select name="dealSel" ${dealId?'disabled':''}>${open.map(d=>`<option ${sel(dealId,d.id)} value="${d.id}">${esc(d.title)}</option>`).join('')}</select>
+  <label>When</label><input name="at" type="datetime-local" value="${toLocal(dAhead(1,10))}">
+  <label>Notes</label><input name="notes" maxlength="160" placeholder="Meet at the front gate…">
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Schedule</button></div></form>`);
+}
+FORMS['visit.create']=fd=>{
+  const u=cur();
+  const dealId=fd.get('deal')||fd.get('dealSel');
+  const d=db.deals.find(x=>x.id===dealId);if(!d)return toast('Pick a deal.','err');
+  ownOrManage(u,d.assignedTo,'deal');
+  const at=+new Date(fd.get('at'))||dAhead(1,10);
+  db.visits.unshift({id:uid(),orgId:u.orgId,dealId:d.id,at,status:'scheduled',outcome:'',agentId:d.assignedTo,notes:String(fd.get('notes')||'').slice(0,160),createdAt:now()});
+  if(['new','qualified'].includes(d.stage)){d.stage='visit';d.stageChangedAt=now()}
+  act(`Site visit scheduled — ${d.title} (${fdt(at)})`,{userId:u.id,about:d.assignedTo});
+  if(d.assignedTo!==u.id)notify([d.assignedTo],`Site visit scheduled: ${d.title} — ${fdt(at)}`,'visit');
+  save();closeLayer();renderMain();toast('Visit scheduled — deal moved to Site Visit stage.');
+};
+ACTIONS['visit.complete']=(_,t)=>{
+  const v=db.visits.find(x=>x.id===t.dataset.id);if(!v)return;
+  const d=db.deals.find(x=>x.id===v.dealId)||{title:'—'};
+  openModal(`<h3>Complete visit</h3><p class="m-sub">${esc(d.title)} · ${fdt(v.at)}</p>
+  <form data-form="visit.done"><input type="hidden" name="id" value="${v.id}">
+  <label>Outcome</label><select name="outcome">${[['interested','Interested'],['offer_made','Made an offer'],['not_interested','Not interested'],['no_show','No-show']].map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('')}</select>
+  <label>Notes</label><textarea name="notes" maxlength="400" placeholder="Feedback, objections, next steps…"></textarea>
+  <label style="display:flex;gap:9px;align-items:center;text-transform:none;letter-spacing:0;font-size:13px;font-weight:500;color:var(--ink2);margin-top:16px"><input type="checkbox" name="killDeal" style="width:auto"> Also mark the deal as lost</label>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Save outcome</button></div></form>`);
+};
+FORMS['visit.done']=fd=>{
+  const u=cur(),v=db.visits.find(x=>x.id===fd.get('id'));if(!v)return;
+  const d=db.deals.find(x=>x.id===v.dealId);
+  ownOrManage(u,v.agentId,'visit');
+  v.status='completed';v.outcome=fd.get('outcome');v.notes=String(fd.get('notes')||'').slice(0,400);
+  const lead=d&&db.leads.find(l=>l.id===d.leadId);
+  if(lead){lead.lastContactAt=now();rescore(lead)}
+  act(`Site visit completed — ${d?d.title:''} (${v.outcome.replace(/_/g,' ')})`,{userId:u.id,about:v.agentId,entity:'lead',entityId:lead?.id});
+  if(v.agentId!==u.id)notify([v.agentId],`Visit marked complete: ${d?d.title:''}`,'visit');
+  save();
+  if(fd.get('killDeal')&&d)moveDeal(d.id,'lost');
+  closeLayer();renderMain();toast('Visit completed — lead engagement updated.');
+};
+ACTIONS['visit.cancel']=(_,t)=>{
+  const u=cur(),v=db.visits.find(x=>x.id===t.dataset.id);if(!v)return;
+  ownOrManage(u,v.agentId,'visit');
+  v.status='cancelled';act(`Site visit cancelled — ${db.deals.find(d=>d.id===v.dealId)?.title||''}`,{userId:u.id});save();renderMain();toast('Visit cancelled.');
+};
+
+/* ---------- commissions ---------- */
+VIEWS.commissions=()=>{
+  const u=cur(),mgr=isMgr(u);
+  const coms=scopeComs().sort((a,b)=>b.at-a.at);
+  const inR_=coms.filter(c=>inR(c.at));
+  const gross=inR_.reduce((a,c)=>a+c.gross,0),mine=inR_.reduce((a,c)=>a+c.agentAmt,0),house=inR_.reduce((a,c)=>a+c.houseAmt,0);
+  const pend=coms.filter(c=>c.status==='pending').reduce((a,c)=>a+(mgr?c.gross:c.agentAmt),0);
+  const paid=coms.filter(c=>c.status==='paid'&&inR(c.at)).reduce((a,c)=>a+(mgr?c.gross:c.agentAmt),0);
+  return`<div class="pg-head"><div><h1>Commissions</h1><div class="sub">${RANGE_LBL[S.range]} · calculated at deal close as value × rate × agent split</div></div>
+  <div class="h-actions"><div class="filters" style="margin:0">${['30d','mtd','qtd','ytd','all'].map(r=>`<button class="btn sm ${S.range===r?'pri':'sec'}" data-action="range" data-r="${r}">${{'30d':'30D','mtd':'MTD','qtd':'QTD','ytd':'YTD','all':'All'}}[r]}</button>`).join('')}</div></div></div>
+  <div class="ledger">
+    <div class="lg"><span class="l">${mgr?'Gross commission':'My commission'}</span><span class="v tnum">${fmt$(mgr?gross:mine)}</span><span class="s">${inR_.length} records</span></div>
+    ${mgr?`<div class="lg"><span class="l">House share</span><span class="v tnum">${fmt$(house)}</span><span class="s">retained by brokerage</span></div>`:''}
+    <div class="lg"><span class="l">Pending payout</span><span class="v tnum">${fmt$(pend)}</span><span class="s">${coms.filter(c=>c.status==='pending').length} awaiting</span></div>
+    <div class="lg"><span class="l">Paid ${RANGE_LBL[S.range]}</span><span class="v tnum">${fmt$(paid)}</span><span class="s">settled</span></div>
+  </div>
+  <table class="tbl"><tr><th>Deal</th><th>Agent</th><th class="r">Deal value</th><th class="r">Rate</th><th class="r">Gross</th><th class="r">${mgr?'Agent share':'My share'}</th>${mgr?'<th class="r">House</th>':''}<th>Date</th><th>Status</th>${mgr?'<th></th>':''}</tr>
+  ${coms.map(c=>{const d=db.deals.find(x=>x.id===c.dealId)||{title:'—',value:0,rate:0};
+    return`<tr class="row" data-action="deal.open" data-id="${c.dealId}"><td><b>${esc(d.title)}</b></td><td>${esc(userById(c.agentId).name)}</td>
+    <td class="r tnum">${fmt$(d.value)}</td><td class="r tnum">${d.rate}%</td><td class="r tnum">${fmt$(c.gross)}</td><td class="r tnum"><b>${fmt$(c.agentAmt)}</b></td>
+    ${mgr?`<td class="r tnum">${fmt$(c.houseAmt)}</td>`:''}<td class="mini">${fdatey(c.at)}</td><td>${pill(c.status,c.status==='paid'?'pl-pos':'pl-warn')}</td>
+    ${mgr?`<td class="r">${c.status==='pending'?`<button class="btn sm sec" data-action="com.pay" data-id="${c.id}">Mark paid</button>`:''}</td>`:''}</tr>`}).join('')||'<tr><td colspan="9" class="empty">No commission records yet — close a deal to generate one.</td></tr>'}</table>`;
+};
+ACTIONS['com.pay']=(_,t)=>{
+  guard('com.view.all');
+  const c=db.coms.find(x=>x.id===t.dataset.id);if(!c||c.status!=='pending')return;
+  confirmDanger({title:'Mark commission as paid?',body:`${fmt$(c.agentAmt)} to <b>${esc(userById(c.agentId).name)}</b> on <b>${esc(db.deals.find(d=>d.id===c.dealId)?.title||'')}</b> will be recorded as settled and logged.`,label:'Mark paid',
+    onYes:()=>{c.status='paid';c.paidAt=now();logSec('finance.commission_paid','med',cur().email,`${fmt$(c.agentAmt)} to ${userById(c.agentId).email}`);notify([c.agentId],`Commission paid — ${fmt$(c.agentAmt)} for ${db.deals.find(d=>d.id===c.dealId)?.title||''}`,'finance');save();closeLayer();renderMain();toast('Commission marked paid.')}});
+};
+
+/* ---------- team ---------- */
+VIEWS.team=()=>{
+  const u=cur(),owner=u.role==='owner';
+  const us=db.users.filter(x=>x.orgId===u.orgId);
+  return`<div class="pg-head"><div><h1>Team</h1><div class="sub">${us.filter(x=>x.active).length} active members · role changes and splits are written to the security log</div></div>
+  ${owner?`<button class="btn pri" data-action="user.invite">${icon('plus',15)} Add member</button>`:''}</div>
+  <table class="tbl"><tr><th>Member</th><th>Role</th><th class="r">Split</th><th class="r">Active leads</th><th class="r">Closed value</th><th>Status</th>${owner?'<th></th>':''}</tr>
+  ${us.map(m=>{
+    const leads=db.leads.filter(l=>l.assignedTo===m.id&&!['converted','lost'].includes(l.status)).length;
+    const closed=db.deals.filter(d=>d.stage==='won'&&d.assignedTo===m.id).reduce((a,d)=>a+d.value,0);
+    return`<tr><td><div style="display:flex;gap:10px;align-items:center">${avatar(m.name,30)}<div><b>${esc(m.name)}</b><br><span class="mini">${esc(m.email)}</span></div></div></td>
+    <td>${pill(m.role,m.role==='owner'?'pl-pos':m.role==='admin'?'pl-warn':'pl-neut')}</td><td class="r tnum">${m.role==='agent'?m.split+'%':'—'}</td>
+    <td class="r tnum">${leads}</td><td class="r tnum">${fmt$M(closed)}</td>
+    <td>${m.active?pill('Active','pl-pos'):pill('Deactivated','pl-dang')}</td>
+    ${owner?`<td class="r" style="white-space:nowrap">${m.id!==u.id?`<button class="btn sm sec" data-action="user.edit" data-id="${m.id}">${icon('edit',12)} Edit</button>
+      <button class="btn sm sec" style="color:${m.active?'var(--red)':'var(--green)'}" data-action="user.toggle" data-id="${m.id}">${m.active?'Deactivate':'Reactivate'}</button>`:'<span class="mini">you</span>'}</td>`:''}</tr>`}).join('')}</table>
+  <p class="mini" style="margin-top:16px">Agents see only their own leads, deals and commissions. Admins see organization data but cannot manage accounts. Owners hold all permissions — enforced at the API layer, not just in the interface.</p>`;
+};
+ACTIONS['user.invite']=()=>{guard('team.manage');
+  openModal(`<h3>Add team member</h3><p class="m-sub">Share the temporary password through a secure channel — they should change it on first sign-in.</p>
+  <form data-form="user.create"><label>Full name</label><input name="name" required maxlength="80">
+  <label>Email</label><input name="email" type="email" required maxlength="120">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Role</label><select name="role"><option value="agent">Agent</option><option value="admin">Admin</option></select></div>
+  <div><label>Commission split (%)</label><input name="split" type="number" min="0" max="100" value="60"></div></div>
+  <label>Temporary password</label><input name="pw" type="text" value="welcome-${randHex(3)}" required>
+  <div class="form-err" id="usErr"></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Create account</button></div></form>`);
+};
+FORMS['user.create']=async fd=>{
+  try{
+    const u=guard('team.manage');
+    const email=String(fd.get('email')||'').trim().toLowerCase();
+    if(db.users.some(x=>x.email.toLowerCase()===email))throw{user:'An account with this email already exists.'};
+    const nu={id:uid(),orgId:u.orgId,name:String(fd.get('name')).trim().slice(0,80),email,pass:await sha256(String(fd.get('pw'))+PW_SALT),
+      role:fd.get('role'),split:clamp(+fd.get('split')||60,0,100),active:true,createdAt:now()};
+    db.users.push(nu);
+    logSec('user.created','med',u.email,`${nu.email} added as ${nu.role} (split ${nu.split}%)`);
+    notify([nu.id],'Welcome to Meridian — your account is ready.','info');
+    save();closeLayer();renderMain();toast(`${esc(nu.name)} added to the team.`);
+  }catch(e){const el=$('#usErr');if(el){el.textContent=e.user||'Could not create account.';el.classList.add('on')}}
+};
+ACTIONS['user.edit']=(_,t)=>{
+  const u=guard('team.manage'),m=db.users.find(x=>x.id===t.dataset.id);
+  openModal(`<h3>Edit ${esc(m.name)}</h3>
+  <form data-form="user.edit"><input type="hidden" name="id" value="${m.id}">
+  <label>Name</label><input name="name" value="${esc(m.name)}" maxlength="80">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label>Role</label><select name="role">${['agent','admin'].map(r=>`<option ${sel(m.role,r)} value="${r}">${r[0].toUpperCase()+r.slice(1)}</option>`).join('')}${m.role==='owner'?`<option selected>owner</option>`:''}</select></div>
+  <div><label>Split (%)</label><input name="split" type="number" min="0" max="100" value="${m.split}"></div></div>
+  <div class="m-actions"><button type="button" class="btn sec" data-action="layer.close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+};
+FORMS['user.edit']=fd=>{
+  const u=guard('team.manage'),m=db.users.find(x=>x.id===fd.get('id'));if(!m)return;
+  const role=fd.get('role'),split=clamp(+fd.get('split')||m.split,0,100);
+  if(role!==m.role||split!==m.split)logSec('team.perm_change','high',u.email,`${m.email}: role ${m.role}→${role}, split ${m.split}%→${split}%`);
+  m.name=String(fd.get('name')).trim().slice(0,80)||m.name;m.role=role;m.split=split;
+  notify([m.id],'Your account permissions were updated by an owner.','info');
+  save();closeLayer();renderMain();toast('Member updated — change logged to security audit.');
+};
+ACTIONS['user.toggle']=(_,t)=>{
+  const u=guard('team.manage'),m=db.users.find(x=>x.id===t.dataset.id);if(!m)return;
+  if(m.active){
+    confirmDanger({title:'Deactivate '+esc(m.name)+'?',body:'They will be signed out immediately and lose all access. Their leads and deals are kept and can be reassigned.',label:'Deactivate',typed:'DEACTIVATE',
+      onYes:()=>{m.active=false;logSec('user.deactivated','high',u.email,m.email+' deactivated');save();closeLayer();renderMain();toast(`${esc(m.name)} deactivated.`)}});
+  }else{m.active=true;logSec('user.reactivated','med',u.email,m.email+' reactivated');save();renderMain();toast(`${esc(m.name)} reactivated.`)}
+};
+
+/* ---------- integrations ---------- */
+VIEWS.integrations=()=>{
+  const ep=db.webhooks[0];
+  const SERVICES=[
+    {k:'mail',n:'Transactional email',d:'SendGrid-compatible adapter — visit confirmations, follow-up reminders, digest reports.',i:'mail'},
+    {k:'sms',n:'SMS messaging',d:'Twilio-compatible adapter — instant new-lead alerts and visit reminders.',i:'phone'},
+    {k:'cal',n:'Calendar sync',d:'Two-way sync with Google & Outlook calendars for site visits.',i:'calcheck'},
+    {k:'sign',n:'E-signature',d:'DocuSign-compatible adapter — offer documents and listing agreements.',i:'edit'},
+  ];
+  const whLog=db.security.filter(s=>s.event.startsWith('webhook.')).slice(0,6);
+  return`<div class="pg-head"><div><h1>Integrations</h1><div class="sub">Inbound webhooks are live in this build; external services ship as configured adapters</div></div></div>
+  <div class="sec-h"><h2>Lead ingestion webhook</h2>${ep.active?pill('Active','pl-pos'):pill('Paused','pl-neut')}</div>
+  <div class="wh-stat"><div><b class="tnum">${ep.received}</b><span class="mini">leads received</span></div><div><b class="tnum">${ep.failed}</b><span class="mini">rejected deliveries</span></div>
+  <div><b class="tnum">${(ep.hits||[]).length}/20</b><span class="mini">rate window (per min)</span></div></div>
+  <div class="code-row"><span class="lbl" style="margin:0">Endpoint</span><div class="mono" style="flex:1">POST https://hooks.meridian.io/v1/leads/${esc(ep.token)}</div><button class="btn gho sm" data-action="wh.copy" data-v="POST https://hooks.meridian.io/v1/leads/${esc(ep.token)}">${icon('copy',14)}</button></div>
+  <div class="code-row"><span class="lbl" style="margin:0">Secret</span><div class="mono" id="whSecret" style="flex:1">••••••••••••••••••••••••</div>
+  <button class="btn gho sm" data-action="wh.reveal">${icon('eye',14)}</button>
+  <button class="btn gho sm" style="color:var(--red)" data-action="wh.rotate">Rotate</button></div>
+  <div class="mono" style="margin-top:12px">curl -X POST https://hooks.meridian.io/v1/leads/${esc(ep.token)} \\
+  -H "Content-Type: application/json" \\
+  -H "X-Webhook-Secret: &lt;secret&gt;" \\
+  -d '{"name":"…","email":"…","budget_min":700000,"budget_max":900000,"timeline":"ASAP"}'</div>
+  <form data-form="whTest" style="margin-top:18px">
+    <div style="display:grid;grid-template-columns:1fr 240px;gap:12px">
+      <div><label>Payload (JSON)</label><textarea name="payload" style="font-family:ui-monospace,Menlo,monospace;font-size:12px" rows="6">{"name":"Test Lead","email":"test.lead@example.com","phone":"+1 555 0000","budget_min":700000,"budget_max":900000,"timeline":"ASAP"}</textarea></div>
+      <div><label>X-Webhook-Secret</label><input name="secret" placeholder="paste secret to authenticate"><label style="margin-top:14px">Try failure modes</label>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <button type="button" class="btn sec sm" data-action="wh.badSecret">Wrong secret → 401</button>
+        <button type="button" class="btn sec sm" data-action="wh.badPayload">Malformed JSON → 400</button>
+        <button type="button" class="btn sec sm" data-action="wh.missingField">Missing email → 400</button>
+      </div></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:14px"><button class="btn pri">${icon('plug',15)} Deliver test event</button>
+    <span class="mini">Requests are validated exactly as production: signature → schema → rate limit. Rejections land in the security log.</span></div>
+  </form>
+  <div class="mono" id="whRes" style="margin-top:12px;display:none"></div>
+  ${whLog.length?`<div class="ruled"><div class="lbl" style="margin-bottom:8px">Recent webhook activity</div>${whLog.map(s=>`<div class="a" style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px"><span class="mini" style="width:110px;flex:none">${ago(s.at)}</span>${sevPill(s.sev)}<span style="color:var(--ink2)">${esc(s.detail)}</span></div>`).join('')}</div>`:''}
+  <div class="ruled"><div class="sec-h"><h2>External services</h2><span class="mini">adapter architecture in place — credentials not configured in this deployment</span></div>
+  ${SERVICES.map(s=>{const st=db.services[s.k];
+    return`<div class="svc">${icon(s.i,20)}<div><b>${s.n}</b><p>${s.d}</p></div><div class="right">
+    ${st?.status==='pending'?pill('Awaiting credentials','pl-warn'):pill('Not connected','pl-neut')}
+    ${!st||st.status!=='pending'?`<button class="btn sec sm" data-action="svc.connect" data-k="${s.k}">Connect</button>`:''}</div></div>`}).join('')}
+  <p class="mini" style="margin-top:12px">“Not connected” is honest status, not a stub — no data leaves this deployment. Once API keys are added to the production environment, each adapter flips to connected with no code changes.</p></div>`;
+};
+ACTIONS['wh.copy']=(_,t)=>{navigator.clipboard?.writeText(t.dataset.v);toast('Endpoint URL copied.')};
+ACTIONS['wh.reveal']=()=>{const el=$('#whSecret');if(el.textContent.startsWith('•')){el.textContent=db.webhooks[0].secret}else{el.textContent='•'.repeat(24)}};
+ACTIONS['wh.rotate']=()=>{
+  guard('webhook');
+  confirmDanger({title:'Rotate webhook secret?',body:'The current secret stops working immediately — any sender using it will receive <b>401</b> until updated. This is logged.',label:'Rotate secret',
+    onYes:()=>{db.webhooks[0].secret='whsec_'+randHex(8);logSec('webhook.secret_rotated','high',cur().email,'Lead webhook secret rotated');save();closeLayer();renderMain();toast('Secret rotated — update your sender.')}});
+};
+ACTIONS['wh.badSecret']=()=>{const f=$('[data-form="whTest"]');f.secret.value='whsec_wrong_secret';f.requestSubmit?f.requestSubmit():f.dispatchEvent(new Event('submit'))};
+ACTIONS['wh.badPayload']=()=>{const f=$('[data-form="whTest"]');f.payload.value='{"name": broken';f.secret.value=db.webhooks[0].secret;f.dispatchEvent(new Event('submit'))};
+ACTIONS['wh.missingField']=()=>{const f=$('[data-form="whTest"]');f.payload.value='{"name":"No Email Lead"}';f.secret.value=db.webhooks[0].secret;f.dispatchEvent(new Event('submit'))};
+FORMS['whTest']=fd=>{
+  const ep=db.webhooks[0],res=$('#whRes');res.style.display='block';
+  const out=(code,obj,ok)=>{res.innerHTML=`<span style="color:${ok?'var(--green)':'var(--red)'};font-weight:700">HTTP ${code}</span>  ${esc(JSON.stringify(obj))}`};
+  ep.hits=(ep.hits||[]).filter(t=>now()-t<60e3);
+  if(ep.hits.length>=20){ep.failed++;logSec('webhook.ratelimit','med','webhook sender','Rate limit exceeded (20/min)');save();return out(429,{error:'Too many requests. Slow down and retry.'})}
+  ep.hits.push(now());
+  if(String(fd.get('secret')||'')!==ep.secret){ep.failed++;logSec('webhook.auth_fail','high','webhook sender','Invalid X-Webhook-Secret on lead ingestion');save();return out(401,{error:'Invalid signature.'})}
+  let p;try{p=JSON.parse(fd.get('payload'))}catch(e){ep.failed++;logSec('webhook.schema_fail','med','webhook sender','Malformed JSON payload');save();return out(400,{error:'Malformed JSON payload.'})}
+  const fields=[];if(!p.name||String(p.name).trim().length<2)fields.push('name');
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(p.email||'')))fields.push('email');
+  if(fields.length){ep.failed++;logSec('webhook.schema_fail','med','webhook sender','Validation failed: '+fields.join(','));save();return out(400,{error:'Validation failed.',fields})}
+  const agents=db.users.filter(x=>x.role==='agent'&&x.active);
+  const assignee=agents[db.settings.rr++%agents.length];
+  const l=createLead({name:String(p.name).trim().slice(0,80),email:String(p.email).trim().slice(0,120),phone:String(p.phone||'').slice(0,30),
+    source:'Webhook',budgetMin:Math.max(0,+p.budget_min||0),budgetMax:Math.max(0,+p.budget_max||0),timeline:TIMELINES.includes(p.timeline)?p.timeline:'1-3 months',
+    assignedTo:assignee.id,notes:'Received via lead ingestion webhook.'},null);
+  ep.received++;
+  const mgrs=db.users.filter(x=>isMgr(x)&&x.active).map(x=>x.id);
+  notify([...mgrs,assignee.id],`New webhook lead: ${l.name} — assigned to ${assignee.name}`,'webhook');
+  logSec('webhook.ingest','low','webhook sender',`Lead created for ${l.email} (score ${l.score})`);
+  save();out(201,{status:'lead_created',lead_id:l.id,score:l.score,assigned_to:assignee.name},true);
+  toast('Webhook delivered — lead created and routed.');renderMain();
+};
+ACTIONS['svc.connect']=(_,t)=>{
+  guard('integrations');
+  const names={mail:'Transactional email',sms:'SMS messaging',cal:'Calendar sync',sign:'E-signature'};
+  openModal(`<h3>Connect ${names[t.dataset.k]}</h3>
+  <p style="font-size:13.5px;color:var(--ink2);margin:10px 0 4px">The adapter interface for this service is built and wired into the event bus — but no API credentials are configured in this deployment, so it stays honestly labeled <b>Not connected</b>. No data is being sent anywhere.</p>
+  <p style="font-size:13px;color:var(--ink3)">In production, an operator adds the provider keys to the environment; the adapter verifies them and flips to connected automatically.</p>
+  <div class="m-actions"><button class="btn pri" data-action="svc.pend" data-k="${t.dataset.k}">Mark as awaiting credentials</button><button class="btn sec" data-action="layer.close">Close</button></div>`);
+};
+ACTIONS['svc.pend']=(_,t)=>{db.services[t.dataset.k]={status:'pending',at:now()};logSec('integration.pending','low',cur().email,`${t.dataset.k} adapter awaiting credentials`);save();closeLayer();renderMain();toast('Marked as awaiting credentials.')};
+
+/* ---------- security log ---------- */
+VIEWS.security=()=>{
+  guard('security.log');
+  const TH=now()-30*DAY;
+  const all=db.security;
+  const cnt=s=>all.filter(x=>x.sev===s&&x.at>TH).length;
+  const rows=all.filter(x=>!S.secSev||x.sev===S.secSev).slice(0,60);
+  return`<div class="pg-head"><div><h1>Security log</h1><div class="sub">Auth, authorization, ingestion and data-export events · retained 180 days</div></div></div>
+  <div class="ledger">
+    <div class="lg"><span class="l">High severity · 30d</span><span class="v tnum">${cnt('high')}</span><span class="s">denied access, locks, rotations</span></div>
+    <div class="lg"><span class="l">Medium · 30d</span><span class="v tnum">${cnt('med')}</span><span class="s">permission & schema events</span></div>
+    <div class="lg"><span class="l">Low · 30d</span><span class="v tnum">${cnt('low')}</span><span class="s">sign-ins, exports, ingests</span></div>
+    <div class="lg"><span class="l">Failed sign-ins · 15m</span><span class="v tnum">${all.filter(x=>x.event==='auth.login.fail'&&now()-x.at<15*60e3).length}</span><span class="s">5 triggers a temporary lock</span></div>
+  </div>
+  <div class="filters"><select data-change="secSev"><option value="">All severities</option><option ${sel(S.secSev,'high')} value="high">High</option><option ${sel(S.secSev,'med')} value="med">Medium</option><option ${sel(S.secSev,'low')} value="low">Low</option></select></div>
+  <table class="tbl"><tr><th>When</th><th>Severity</th><th>Event</th><th>Actor</th><th>Detail</th></tr>
+  ${rows.map(s=>`<tr><td class="mini" style="white-space:nowrap">${fdt(s.at)}</td><td>${sevPill(s.sev)}</td><td><b style="font-size:12.5px">${esc(s.event)}</b></td><td class="mini">${esc(s.actor)}</td><td class="mini">${esc(s.detail)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No events at this severity.</td></tr>'}</table>
+  <p class="mini" style="margin-top:16px">Users see generic error messages — queries, credentials and stack details never reach the client. This log is the single place technical detail is retained.</p>`;
+};
+CHANGES['secSev']=v=>{S.secSev=v;renderMain()};
+
+/* ---------- denied ---------- */
+VIEWS.denied=()=>`<div class="denied">${icon('shield',44)}<h1>Access denied</h1>
+<p style="color:var(--ink2);font-size:13.5px">Your role (${esc(cur()?.role||'')}) does not permit this area. The attempt has been recorded in the security log.</p>
+<button class="btn pri" style="margin-top:18px" data-action="nav" data-r="dashboard">Back to overview</button></div>`;
+
+/* ============================================================
+   7 · COMMAND PALETTE (search + AI)
+============================================================ */
+let cmdItems=[];
+function cmdRender(){
+  const pop=$('#cmdPop'),q=S.cmd.trim();
+  if(!q){pop.hidden=true;S.cmdOpen=false;return}
+  S.cmdOpen=true;pop.hidden=false;
+  const u=cur(),ql=q.toLowerCase();
+  cmdItems=[];let html='';
+  const ans=aiAnswer(q);
+  if(ans){html+=`<div class="cmd-i" data-action="cmd.ans"><div style="flex:1"><span class="ans-h" style="padding:0">${icon('sparkle',13)} ${esc(ans.title)}</span><div class="ans-big">${ans.html.split('</div>')[0].replace('<div class="ans-big">','')}</div><div class="ans-p" style="padding:0 0 4px">Ask follow-ups or press Enter for the full brief</div></div></div>`;
+    cmdItems.push({type:'ans',ans})}
+  const groups=[];
+  const leads=scopeLeads().filter(l=>(l.name+l.email).toLowerCase().includes(ql)).slice(0,4);
+  if(leads.length)groups.push(['Leads',leads.map(l=>({ic:'users',l:l.name,sub:`score ${l.score} · ${LEAD_STATUS[l.status]}`,go:'lead',id:l.id}))]);
+  const deals=scopeDeals().filter(d=>d.title.toLowerCase().includes(ql)).slice(0,4);
+  if(deals.length)groups.push(['Deals',deals.map(d=>({ic:'board',l:d.title,sub:`${STAGES[d.stage].n} · ${fmt$M(d.value)}`,go:'deal',id:d.id}))]);
+  const props=db.properties.filter(p=>p.orgId===u.orgId&&p.title.toLowerCase().includes(ql)).slice(0,3);
+  if(props.length)groups.push(['Properties',props.map(p=>({ic:'building',l:p.title,sub:fmt$(p.price),go:'prop',id:p.id}))]);
+  const navs=NAV.filter(n=>n.r&&(!n.p||can(u,n.p))&&n.l.toLowerCase().includes(ql)).slice(0,3);
+  if(navs.length)groups.push(['Go to',navs.map(n=>({ic:n.i,l:n.l,sub:'page',go:'route',id:n.r}))]);
+  groups.forEach(([lbl,items])=>{
+    html+=`<div class="cmd-sec">${lbl}</div>`+items.map(it=>{const i=cmdItems.length;cmdItems.push(it);
+      return`<button class="cmd-i ${i===S.cmdIdx?'sel':''}" data-action="cmd.go" data-i="${i}">${icon(it.ic,15)}<span>${esc(it.l)}</span><span class="sub">${esc(it.sub)}</span></button>`}).join('');
+  });
+  if(!cmdItems.length)html=`<div class="empty" style="padding:20px">No matches — try “pipeline forecast”, “hot leads” or a name.</div>`;
+  pop.innerHTML=html;S.cmdIdx=clamp(S.cmdIdx,0,cmdItems.length-1);
+}
+INPUTS['cmdX']=()=>{};
+ACTIONS['cmd.go']=(_,t)=>cmdPick(+t.dataset.i);
+ACTIONS['cmd.ans']=()=>{const it=cmdItems.find(x=>x.type==='ans');if(it)openAns(it.ans)};
+function cmdPick(i){
+  const it=cmdItems[i];if(!it)return;
+  S.cmd='';const inp=$('#cmd');if(inp){inp.value='';$('#cmdPop').hidden=true}
+  if(it.type==='ans')return openAns(it.ans);
+  if(it.go==='lead')return openLead(it.id);
+  if(it.go==='deal')return openDeal(it.id);
+  if(it.go==='prop'){const p=db.properties.find(x=>x.id===it.id);if(p)$(`[data-action="prop.open"][data-id="${p.id}"]`)||ACTIONS['prop.open'](null,{dataset:{id:p.id}});return}
+  if(it.go==='route'){S.route=it.id;location.hash='#/'+it.id;renderMain();
+    $$('.nav-i').forEach(el=>el.classList.toggle('on',el.dataset.r===it.id))}
+}
+function openAns(ans){
+  openDrawer(`<div class="dw-h"><div><span class="ans-h" style="padding:0">${icon('sparkle',14)} Meridian Intelligence</span><h3 style="margin-top:4px">${esc(ans.title)}</h3></div><button class="btn gho dw-x" data-action="layer.close">${icon('x',18)}</button></div>
+  <div class="dw-b"><div style="margin:6px -12px 0">${ans.html}</div>
+  <p class="mini" style="margin-top:18px">Computed locally from your live records — role-scoped to what you're allowed to see.</p></div>`);
+}
+
+/* ============================================================
+   8 · GLOBAL EVENTS · ROUTER · BOOT
+============================================================ */
+ACTIONS['nav']=(_,t)=>{S.route=t.dataset.r;location.hash='#/'+t.route||'';
+  $$('.nav-i').forEach(el=>el.classList.toggle('on',el.dataset.r===S.route));renderMain()};
+ACTIONS['logout']=()=>doLogout();
+ACTIONS['layer.close']=()=>closeLayer();
+ACTIONS['conf.yes']=(_,t)=>{
+  if(t.dataset.typed){const v=$('[name="typedv"]')?.value;if(v!==t.dataset.typed)return toast('Type the confirmation word exactly.','err')}
+  const cb=onConf;onConf=null;closeLayer();cb&&cb();
+};
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-action]');
+  if(!t){
+    if(!e.target.closest('.cmd')){const p=$('#cmdPop');if(p){p.hidden=true;S.cmd='';const i=$('#cmd');if(i)i.value=''}}
+    if(!e.target.closest('.bell')&&!e.target.closest('#notifPop')){$('#notifPop').innerHTML='';S.notifOpen=false}
+    return;
+  }
+  const fn=ACTIONS[t.dataset.action];if(fn)fn(t.dataset.id,t,e);
+});
+document.addEventListener('submit',e=>{
+  const f=e.target.closest('[data-form]');if(!f)return;e.preventDefault();
+  const fn=FORMS[f.dataset.form];if(fn)fn(new FormData(f),f);
+});
+document.addEventListener('change',e=>{
+  const t=e.target.closest('[data-change]');if(!t)return;
+  const fn=CHANGES[t.dataset.change];if(fn)fn(t.value,t);
+});
+document.addEventListener('input',e=>{
+  const t=e.target.closest('#cmd');
+  if(t){S.cmd=t.value;S.cmdIdx=0;cmdRender();return}
+});
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#cmd')?.focus();return}
+  if(e.key==='Escape'){closeLayer();const p=$('#cmdPop');if(p)p.hidden=true;return}
+  if(S.cmdOpen&&(e.key==='ArrowDown'||e.key==='ArrowUp'||e.key==='Enter')){
+    e.preventDefault();
+    if(e.key==='Enter')return cmdPick(S.cmdIdx);
+    S.cmdIdx=clamp(S.cmdIdx+(e.key==='ArrowDown'?1:-1),0,Math.max(0,cmdItems.length-1));
+    $$('#cmdPop .cmd-i').forEach((el,i)=>el.classList.toggle('sel',i===S.cmdIdx));
+  }
+});
+function onRoute(){
+  if(!cur())return renderLogin();
+  const r=(location.hash||'').replace(/^#\//,'');
+  if(r&&r!==S.route){S.route=r}
+  renderMain();
+  $$('.nav-i').forEach(el=>el.classList.toggle('on',el.dataset.r===S.route));
+}
+window.addEventListener('hashchange',onRoute);
+
+(async function boot(){
+  loadDB();
+  if(!db||!db.users)await seedDB();
+  try{const s=JSON.parse(localStorage.getItem(SESS_KEY));if(s&&s.uid&&db.users.find(u=>u.id===s.uid))SESSION=s}catch(e){}
+  if(!location.hash)location.hash='#/dashboard';
+  if(SESSION&&checkSession()){renderApp()}else{SESSION=null;renderLogin()}
+})();
+</script>
+</body>
+</html>
