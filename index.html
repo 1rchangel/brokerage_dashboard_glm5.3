@@ -386,7 +386,7 @@ const CONFIG = {
   SUPABASE_ANON_KEY: '',       // ← VITE_SUPABASE_ANON_KEY (NEVER service-role)
   AI_CHAT_ENDPOINT: '',        // e.g. https://your-api.example/api/ai/chat
   simulateLatency: true,       // demo-mode skeletons only
-  simulateErrors: false,       // demo-mode error/retry演练 only
+  simulateErrors: false,       // demo-mode error/retry demo only
   brokerageDefaults: { pct: 1, fixed: 500000, gst: 18, tds: 2, agentSplit: 50 },
 };
 
@@ -1019,50 +1019,62 @@ const val = (r, keys, d) => { if (r) for (const k of keys) if (r[k] !== undefine
 const pickKey = (r, keys) => { if (r) for (const k of keys) if (r[k] !== undefined) return k; return null; };
 const arr1 = x => Array.isArray(x) ? (x[0] ?? '') : x;
 
+/* ---- leads: the VERIFIED schema (from your table definition) ----
+   id · organization_id · name · phone · whatsapp · email · city · locality ·
+   source_id · source_name · campaign · assigned_agent_id · created_by ·
+   stage_id · intent · financial_status · score · temperature ·
+   budget_strength · timeline_score · engagement_score · source_score
+   Hard guarantee: nothing outside this set is ever written.
+   Requirement details (purpose, property type, configuration, budget,
+   carpet, possession, notes) have NO matching columns → UI-only for now. */
+const LEADS_COLUMNS = new Set(['organization_id','name','phone','whatsapp','email','city','locality','source_id','source_name','campaign','assigned_agent_id','created_by','stage_id','intent','financial_status','score','temperature','budget_strength','timeline_score','engagement_score','source_score']);
+const scrubLeadRow = (row, { keepNull = false } = {}) => Object.fromEntries(
+  Object.entries(row).filter(([k, v]) => LEADS_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
+
 const fromLeadRow = r => ({
-  id: r.id, name: val(r, ['name'], '—'), phone: val(r, ['phone'], ''), whatsapp: !!r.whatsapp, email: val(r, ['email'], ''),
-  city: val(r, ['city'], ''), locality: val(r, ['locality'], ''),
-  source: val(r, ['source_name','source'], ''), sourceId: r.source_id || null, campaign: val(r, ['campaign'], ''),
+  id: r.id, name: val(r, ['name'], '—'), phone: val(r, ['phone'], ''), whatsapp: !!r.whatsapp,
+  email: val(r, ['email'], ''), city: val(r, ['city'], ''), locality: val(r, ['locality'], ''),
+  source: val(r, ['source_name'], ''), sourceId: r.source_id || null, campaign: val(r, ['campaign'], ''),
   agentId: r.assigned_agent_id || null, createdAt: r.created_at || null,
-  lastActivityAt: val(r, ['last_activity_at','updated_at'], r.created_at),
-  nextFollowUpAt: val(r, ['next_follow_up_at','follow_up_at'], null),
-  stage: val(r, ['stage_id','stage'], 'new'), intent: val(r, ['intent'], 'Warm'),
-  financial: val(r, ['financial_status'], 'Financing Unknown'),
-  visitCount: val(r, ['visit_count'], 0),
+  lastActivityAt: r.created_at || null,          // no last_activity_at column — honest fallback
+  nextFollowUpAt: null,                          // no column yet → drawer shows "—" (UI-only until schema adds one)
+  stage: r.stage_id || null, intent: val(r, ['intent'], '') || 'Warm',
+  financial: val(r, ['financial_status'], '') || '—',
+  visitCount: 0,
   dbScore: r.score ?? null, dbTemperature: val(r, ['temperature'], null),
   dbFactors: (r.budget_strength != null || r.timeline_score != null || r.engagement_score != null || r.source_score != null) ? [
     ['Budget clarity', r.budget_strength ?? 0, 15], ['Timeline', r.timeline_score ?? 0, 13],
     ['Engagement', r.engagement_score ?? 0, 12], ['Source quality', r.source_score ?? 0, 10] ] : null,
-  req: { purpose: val(r, ['purpose'], 'Buy'), propertyClass: val(r, ['property_class'], 'Residential'),
-    prefCity: val(r, ['preferred_city','city'], ''), prefLocality: val(r, ['preferred_locality','locality'], ''),
-    projectId: r.project_id || null, propertyType: val(r, ['property_type'], '—'), config: val(r, ['configuration','config'], ''),
-    budgetMin: r.budget_min ?? null, budgetMax: r.budget_max ?? null, carpetMin: r.carpet_min ?? null,
-    possession: val(r, ['possession'], '—'), timeline: val(r, ['timeline'], '—') },
-  decision: { decisionMaker: r.decision_maker ?? true, familyInvolved: r.family_involved ?? false,
-    profile: val(r, ['customer_profile','profile'], 'End User'), existingProperty: val(r, ['existing_property'], '—'),
-    currentLocation: val(r, ['current_location'], '—') },
-  activities: [], notes: val(r, ['notes'], '') });
-const leadToRow = (l, orgId) => {
-  const row = { name: l.name, phone: l.phone, whatsapp: l.whatsapp !== false, email: l.email || null,
-    city: l.city || null, locality: l.locality || null, source_name: l.source || null, campaign: l.campaign || null,
-    assigned_agent_id: l.agentId || null, stage_id: l.stage || 'new', intent: l.intent || 'Warm',
-    financial_status: l.financial || 'Financing Unknown',
-    purpose: l.req?.purpose || null, property_type: l.req?.propertyType || null, configuration: l.req?.config || null,
-    budget_min: l.req?.budgetMin ?? null, budget_max: l.req?.budgetMax ?? null, carpet_min: l.req?.carpetMin ?? null,
-    possession: l.req?.possession || null, notes: l.notes || null };
-  if (orgId) row.organization_id = orgId;
-  return Object.fromEntries(Object.entries(row).filter(([,v]) => v !== undefined));
-};
-const leadPatchToRow = patch => {
-  const row = {};
-  if (patch.stage !== undefined) row.stage_id = patch.stage;
-  if (patch.agentId !== undefined) row.assigned_agent_id = patch.agentId;
-  if (patch.nextFollowUpAt !== undefined) row.next_follow_up_at = patch.nextFollowUpAt;
-  if (patch.notes !== undefined) row.notes = patch.notes;
-  if (patch.intent !== undefined) row.intent = patch.intent;
-  if (patch.financial !== undefined) row.financial_status = patch.financial;
-  return row;
-};
+  req: { purpose: 'Buy', propertyClass: 'Residential', prefCity: val(r, ['city'], ''), prefLocality: val(r, ['locality'], ''),
+    projectId: null, propertyType: '—', config: '', budgetMin: null, budgetMax: null,
+    carpetMin: null, possession: '—', timeline: '—' },
+  decision: { decisionMaker: true, familyInvolved: false, profile: 'End User', existingProperty: '—', currentLocation: '—' },
+  activities: [], notes: '',
+});
+const leadToRow = (l, orgId) => scrubLeadRow({
+  organization_id: orgId || undefined,          // runtime value from the authenticated profile — never hardcoded
+  name: l.name,
+  phone: l.phone,
+  whatsapp: l.whatsapp !== false,
+  email: l.email || null,
+  city: l.city || null,
+  locality: l.locality || null,
+  source_id: l.sourceId || null,                // resolved from lead_sources in R.leads.create
+  source_name: l.source || null,
+  campaign: l.campaign || null,
+  assigned_agent_id: l.agentId || null,
+  created_by: authService.profile()?.user?.id || null,
+  stage_id: l.stage || null,                    // resolved from pipeline_stages in R.leads.create — no hardcoded 'new'
+  /* intent & financial_status deliberately NOT set on insert — the form doesn't
+     collect them and your DB defaults/enums own them. They remain patchable. */
+});
+const leadPatchToRow = patch => scrubLeadRow({    // keepNull so un-assign (null) still persists
+  stage_id: patch.stage,
+  assigned_agent_id: patch.agentId,
+  intent: patch.intent,
+  financial_status: patch.financial,
+}, { keepNull: true });
+
 const fromAgentRow = r => ({ id: r.id, name: val(r, ['name'], '—'), role: val(r, ['role'], 'Agent'), email: val(r, ['email'], ''),
   phone: val(r, ['phone'], ''), joined: val(r, ['joined_at','joined'], null), status: val(r, ['status'], 'Active'),
   target: val(r, ['sales_target','target'], 0), avgResp: val(r, ['avg_response_minutes','avg_response'], 0),
@@ -1154,6 +1166,7 @@ const fromInsightRow = r => ({ type: val(r, ['type','insight_type','category'], 
 /* =====================================================================
    /remote — production Supabase implementations (RLS-scoped by design)
    ===================================================================== */
+let _leadSourcesCache = null;
 const R = {
   organization: {
     async get(){ const id = authOrgId(); if (!id) throw new Error('No organization linked to your agent profile');
@@ -1172,14 +1185,31 @@ const R = {
     list: () => sel('leads', { limit: 500 }),
     get: async id => (await sel('leads', { eq: { id } }))[0],
     async create(data){
-      const rows = await ins('leads', [leadToRow(data, authOrgId())]);
-      const l = rows[0];
-      if (l && authAgentId()) await ins('lead_activities', [{ lead_id: l.id, agent_id: authAgentId(), type: 'note', text: 'Lead created', created_at: new Date().toISOString() }]);
+      // resolve source_id from the real lead_sources table (best-effort, cached)
+      let sourceId = null;
+      if (data.source){
+        if (_leadSourcesCache === null){ try { _leadSourcesCache = await sel('lead_sources', { limit: 500 }); } catch(e){ _leadSourcesCache = []; } }
+        const hit = _leadSourcesCache.find(s => String(val(s, ['name','source'], '')).trim().toLowerCase() === String(data.source).trim().toLowerCase());
+        sourceId = hit ? hit.id : null;
+      }
+      // resolve the entry stage from pipeline_stages (loaded at boot) — never assume the literal 'new'
+      const stages = pipelineService.stages();
+      const entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
+      const rows = await ins('leads', [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]);
+      // best-effort activity log — must never fail a successful leads insert
+      const l = rows && rows[0];
+      if (l){ try { await ins('lead_activities', [{ lead_id: l.id, agent_id: authAgentId(), type: 'note', text: 'Lead created' }]); }
+        catch(e){ console.warn('lead_activities not written (column shape differs):', e.message); } }
       return rows;
     },
     async update(id, patch){
-      if (patch.agentId !== undefined && patch.agentId) await ins('lead_assignments', [{ lead_id: id, agent_id: patch.agentId, assigned_by: authAgentId() }]);
-      return upd('leads', { id }, leadPatchToRow(patch));
+      const row = leadPatchToRow(patch);
+      if (patch.agentId !== undefined && patch.agentId){
+        try { await ins('lead_assignments', [{ lead_id: id, agent_id: patch.agentId, assigned_by: authAgentId() }]); }
+        catch(e){ console.warn('lead_assignments not written (column shape differs):', e.message); }
+      }
+      if (!Object.keys(row).length){ return (await sel('leads', { eq: { id } })); }   // nothing valid to change
+      return upd('leads', { id }, row);
     },
     async remove(id){ const c = await client(); const res = await c.from('leads').delete().eq('id', id);
       if (res.error) throw new Error(res.error.message); return true; },
@@ -1947,7 +1977,7 @@ async function newLeadModal(){
       <div class="frow"><div><label class="f">Budget min (₹)</label><input class="inp" name="budgetMin" type="number" min="0" step="100000" placeholder="e.g. 8000000"></div>
       <div><label class="f">Budget max (₹)</label><input class="inp" name="budgetMax" type="number" min="0" step="100000" placeholder="e.g. 12000000"></div></div>
       <label class="f">Notes</label><textarea class="inp" name="notes" placeholder="Anything the team should know…"></textarea>
-      <div class="fhint" style="margin-top:10px">Only name &amp; phone are mandatory.${demoMode() ? '' : ' Writes to the <span class="mono">leads</span> table under RLS.'}</div>
+      <div class="fhint" style="margin-top:10px">Name &amp; phone are mandatory. Persisted columns: name · phone · whatsapp · email · city · locality · source_name · campaign · assigned_agent_id · created_by · stage_id. Budget &amp; property-type details stay in this session until the leads table gains matching columns.</div>
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="leadForm">${icon('plus',14)} Create lead</button>`);
 }
@@ -2362,7 +2392,6 @@ PAGES.inventory = { async render(root, p, seq){
   const configs = [...new Set(allUnits.map(u => u.config))];
   const rateBars = charts.hbars(configs.map(c => { const us = allUnits.filter(u => u.config === c);
     return { l: c || '—', v: Math.round(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length), tip: psf(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length) + ' · ' + us.length + ' units', c: '#1F6B4D' }; }));
-  const towers = [...new Set(allUnits.map(u => u.tower))];
   root.innerHTML = `
     ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.${demoMode() ? '' : ' Live from the inventory_units table.'}`)}
     <div class="filterbar">
@@ -2660,7 +2689,7 @@ PAGES.ai = { async render(root, p, seq){
         <div id="aiIns">${insights.length ? insights.map(i => `<div class="ins ${i.sev}">
           <div class="i-t">${icon(i.type === 'Risk' ? 'alert' : i.type === 'Revenue' ? 'trend' : i.type === 'Performance' ? 'agent' : i.type === 'Marketing' ? 'megaphone' : i.type === 'Inventory' ? 'layers' : i.type === 'Opportunity' ? 'flame' : 'clock', 15)}<span>${esc(i.title)}</span><span class="i-type" style="margin-left:auto">${esc(i.type)}</span></div>
           <div class="i-b">${esc(i.body)}</div>
-          ${i.act && i.act.action && Actions[i.act.action] ? `<button class="i-a" data-action="${esc(i.act.action)}" data-id="${esc(i.act.id || '')}" ${/nav|openLead|openAgent/.test(i.act.action) ? '' : ''}>${icon('chevR',13)} ${esc(i.act.label || 'View')}</button>` : ''}
+          ${i.act && i.act.action && Actions[i.act.action] ? `<button class="i-a" data-action="${esc(i.act.action)}" data-id="${esc(i.act.id || '')}">${icon('chevR',13)} ${esc(i.act.label || 'View')}</button>` : ''}
         </div>`).join('') : `<div class="ins"><div class="i-t">${icon('ai',15)}<span>No AI insights yet</span></div><div class="i-b">Insights appear here when your backend writes to <span class="mono">ai_insights</span>, or when you ask the analyst a question.</div></div>`}</div>
         <p style="font-size:11.5px;color:var(--ink3);margin-top:6px">Actions run through the shared <span class="mono">Actions</span> registry — the same intents become backend endpoints.</p>
       </div>
@@ -2954,9 +2983,37 @@ document.addEventListener('change', async e => {
   if (c === 'agentRole'){ await agentService.updateRole(id, t.value); toast('Role updated (frontend hint — RLS enforces real permissions)'); }
   if (c === 'taskDone'){ await taskService.setStatus(id, t.checked ? 'Completed' : 'Pending'); toast(t.checked ? 'Task completed' : 'Task reopened'); refresh(); }
 });
+
+/* ---- form error surface + busy state ---- */
+function clearFormError(form){ const el = form && form.querySelector('.form-err'); if (el) el.remove(); }
+function showFormError(form, msg){
+  if (!form) return;
+  clearFormError(form);
+  const el = document.createElement('div');
+  el.className = 'form-err';
+  el.style.cssText = 'color:var(--red);font-size:12.5px;line-height:1.5;margin:12px 0 0;padding:9px 12px;background:var(--red-bg);border:1px solid var(--red-bd);border-radius:8px;word-break:break-word';
+  el.textContent = msg;                       // textContent, never innerHTML, for error text
+  form.prepend(el);
+  el.scrollIntoView({ block: 'nearest' });
+}
+async function guardForm(form, fn){
+  const btn = form.querySelector('[type="submit"]'); const orig = btn ? btn.innerHTML : '';
+  clearFormError(form);
+  try {
+    if (btn){ btn.disabled = true; btn.innerHTML = icon('refresh',13) + ' Saving…'; }
+    await fn();
+    return true;
+  } catch(err){
+    if (btn){ btn.disabled = false; btn.innerHTML = orig; }
+    showFormError(form, (err && err.message) || 'Request failed');   // the exact Supabase/PostgREST message
+    return false;
+  }
+}
+
 document.addEventListener('submit', async e => {
   const f = e.target.closest('[data-form]'); if (!f) return; e.preventDefault();
   const fd = Object.fromEntries(new FormData(f).entries()); const kind = f.dataset.form;
+
   if (kind === 'authSetup'){
     const btn = $('#authSubmit'); btn.disabled = true; btn.textContent = 'Connecting…';
     try { await authService.connect(fd.url, fd.key); } catch(err){ renderLoginScreen('setup', err.message || 'Connection failed'); }
@@ -2968,31 +3025,58 @@ document.addEventListener('submit', async e => {
     return;
   }
   if (kind === 'lead'){
-    await leadService.createLead({ name:fd.name.trim(), phone:fd.phone.trim(), city:fd.city || 'Gurugram', locality:fd.locality || '—', source:fd.source,
-      agentId:fd.agentId || null, intent:'Warm', financial:'Financing Unknown', visitCount:0, nextFollowUpAt:inDays(1),
-      req:{ purpose:fd.purpose, propertyClass:'Residential', prefLocality:fd.locality || '—', propertyType:fd.propertyType,
-        config:'', budgetMin:+fd.budgetMin || null, budgetMax:+fd.budgetMax || null, carpetMin:null, possession:'—', timeline:'—' }, notes:fd.notes || '' });
-    closeModal(); toast('Lead created' + (prodMode() ? ' — written to leads' : '')); renderBadges(); refresh();
+    await guardForm(f, async () => {
+      const created = await leadService.createLead({
+        name: fd.name.trim(), phone: fd.phone.trim(), city: fd.city || 'Gurugram', locality: fd.locality || '',
+        source: fd.source, agentId: fd.agentId || null, visitCount: 0,
+        req: { purpose: fd.purpose, propertyClass: 'Residential', prefLocality: fd.locality || '',
+          propertyType: fd.propertyType, config: '', budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null },
+        notes: fd.notes || '',
+      });
+      // built-in round-trip verification: re-read the row from the database
+      if (prodMode()){
+        const check = await leadService.getLead(created.id);
+        if (!check || !check.id) throw new Error('Insert succeeded but the lead could not be re-read — check the RLS SELECT policy on leads (the row exists).');
+      }
+      // UI-only enrichment: form details with no matching leads columns — visible this session, not persisted
+      created.req = { ...created.req, purpose: fd.purpose, propertyType: fd.propertyType, budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null };
+      created.notes = fd.notes || '';
+      closeModal(); toast('Lead created' + (prodMode() ? ' — verified in Supabase' : ''));
+      renderBadges(); refresh();
+    });
+    return;
   }
   if (kind === 'visit'){
-    const proj = await projectService.getProject(fd.projectId);
-    await siteVisitService.createVisit({ leadId:fd.leadId, agentId:fd.agentId, projectId:fd.projectId,
-      date:new Date(fd.date + 'T09:00').toISOString(), time:fd.time, siteContact:fd.siteContact || '—', location:proj?.address || '', notes:'' });
-    closeModal(); toast('Site visit scheduled' + (prodMode() ? ' — written to site_visits' : '')); renderBadges(); refresh();
+    await guardForm(f, async () => {
+      const proj = await projectService.getProject(fd.projectId).catch(() => null);
+      await siteVisitService.createVisit({ leadId: fd.leadId, agentId: fd.agentId, projectId: fd.projectId,
+        date: new Date(fd.date + 'T09:00').toISOString(), time: fd.time, siteContact: fd.siteContact || '', location: proj?.address || '', notes: '' });
+      closeModal(); toast('Site visit scheduled'); renderBadges(); refresh();
+    });
+    return;
   }
   if (kind === 'task'){
-    await taskService.createTask({ type:fd.type, title:fd.title, leadId:fd.leadId || null, agentId:fd.agentId,
-      dueAt:new Date(fd.date + 'T10:00').toISOString(), priority:fd.priority, notes:fd.notes || '' });
-    closeModal(); toast('Task created' + (prodMode() ? ' — written to tasks' : '')); refresh();
+    await guardForm(f, async () => {
+      await taskService.createTask({ type: fd.type, title: fd.title, leadId: fd.leadId || null, agentId: fd.agentId,
+        dueAt: new Date(fd.date + 'T10:00').toISOString(), priority: fd.priority, notes: fd.notes || '' });
+      closeModal(); toast('Task created'); refresh();
+    });
+    return;
   }
   if (kind === 'visitOutcome'){
-    await siteVisitService.completeVisit(f.dataset.id, fd.outcome, +fd.followUpDays);
-    closeModal(); toast('Visit outcome recorded'); renderBadges(); refresh();
+    await guardForm(f, async () => {
+      await siteVisitService.completeVisit(f.dataset.id, fd.outcome, +fd.followUpDays);
+      closeModal(); toast('Visit outcome recorded'); renderBadges(); refresh();
+    });
+    return;
   }
   if (kind === 'org'){
-    await organizationService.update({ name:fd.name, city:fd.city, gstin:fd.gstin });
-    App.org = await organizationService.getOrganization();
-    closeModal(); toast('Organization saved' + (prodMode() ? ' — written to organizations' : ' (demo)')); renderShell(); refresh();
+    await guardForm(f, async () => {
+      await organizationService.update({ name: fd.name, city: fd.city, gstin: fd.gstin });
+      App.org = await organizationService.getOrganization();
+      closeModal(); toast('Organization saved' + (prodMode() ? ' — written to organizations' : ' (demo)')); renderShell(); refresh();
+    });
+    return;
   }
 });
 document.addEventListener('keydown', e => {
@@ -3008,3 +3092,4 @@ document.addEventListener('keydown', e => {
 })();
 </script>
 </body>
+</html>
