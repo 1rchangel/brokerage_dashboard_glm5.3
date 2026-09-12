@@ -492,6 +492,8 @@ const DEFAULT_STAGES = [
 ];
 const pipelineService = {
   _stages: DEFAULT_STAGES.map(s => ({...s})),
+  _loaded: false,
+  loaded(){ return !!this._loaded; },
   async load(){ /* production: read pipeline_stages table */
     try {
       const rows = await sel('pipeline_stages', { limit: 50 });
@@ -504,6 +506,7 @@ const pipelineService = {
             lost: !!val(r, ['is_lost','lost'], false) };
         }).sort((a,b) => (a.sort ?? 0) - (b.sort ?? 0));
         this._stages = mapped;
+        this._loaded = true;
       }
     } catch(e){ console.warn('pipeline_stages not readable — using built-in defaults:', e.message); }
   },
@@ -1035,7 +1038,7 @@ const fromLeadRow = r => ({
   id: r.id, name: val(r, ['name'], '—'), phone: val(r, ['phone'], ''), whatsapp: !!r.whatsapp,
   email: val(r, ['email'], ''), city: val(r, ['city'], ''), locality: val(r, ['locality'], ''),
   source: val(r, ['source_name'], ''), sourceId: r.source_id || null, campaign: val(r, ['campaign'], ''),
-  agentId: r.assigned_agent_id || null, createdAt: r.created_at || null,
+  agentId: r.assigned_agent_id || null, createdById: r.created_by || null, createdAt: r.created_at || null,
   lastActivityAt: r.created_at || null,          // no last_activity_at column — honest fallback
   nextFollowUpAt: null,                          // no column yet → drawer shows "—" (UI-only until schema adds one)
   stage: r.stage_id || null, intent: val(r, ['intent'], '') || 'Warm',
@@ -1063,7 +1066,7 @@ const leadToRow = (l, orgId) => scrubLeadRow({
   source_name: l.source || null,
   campaign: l.campaign || null,
   assigned_agent_id: l.agentId || null,
-  created_by: authService.profile()?.user?.id || null,
+  created_by: authAgentId() || null,   // leads_created_by_fkey → agents(id) — the CRM person, not the auth.users UUID
   stage_id: l.stage || null,                    // resolved from pipeline_stages in R.leads.create — no hardcoded 'new'
   /* intent & financial_status deliberately NOT set on insert — the form doesn't
      collect them and your DB defaults/enums own them. They remain patchable. */
@@ -1185,6 +1188,8 @@ const R = {
     list: () => sel('leads', { limit: 500 }),
     get: async id => (await sel('leads', { eq: { id } }))[0],
     async create(data){
+      // created_by must satisfy leads_created_by_fkey → agents(id)
+      if (!authAgentId()) throw new Error('No agent profile loaded — created_by requires your agents.id. Sign out and sign in again to reload your profile.');
       // resolve source_id from the real lead_sources table (best-effort, cached)
       let sourceId = null;
       if (data.source){
@@ -1192,9 +1197,12 @@ const R = {
         const hit = _leadSourcesCache.find(s => String(val(s, ['name','source'], '')).trim().toLowerCase() === String(data.source).trim().toLowerCase());
         sourceId = hit ? hit.id : null;
       }
-      // resolve the entry stage from pipeline_stages (loaded at boot) — never assume the literal 'new'
-      const stages = pipelineService.stages();
-      const entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
+      // resolve the entry stage from pipeline_stages (loaded at boot) — never a fallback string id
+      let entryStage = null;
+      if (pipelineService.loaded()){
+        const stages = pipelineService.stages();
+        entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
+      }
       const rows = await ins('leads', [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]);
       // best-effort activity log — must never fail a successful leads insert
       const l = rows && rows[0];
@@ -1298,10 +1306,10 @@ const R = {
   },
   conversations: {
     async listMapped(){
-      const convs = await sel('whatsapp_conversations', { limit: 200 });
+      const convos = await sel('whatsapp_conversations', { limit: 200 });
       let msgs = []; try { msgs = await sel('whatsapp_messages', { limit: 2000 }); } catch(e){}
       const byC = {}; msgs.forEach(m => { const cid = val(m, ['conversation_id','whatsapp_conversation_id'], null); if (cid) (byC[cid] ||= []).push(m); });
-      return convs.map(cv => fromConvoRow(cv, (byC[cv.id] || []).sort((a,b) => new Date(val(a,['created_at','sent_at'],0)) - new Date(val(b,['created_at','sent_at'],0)))));
+      return convos.map(cv => fromConvoRow(cv, (byC[cv.id] || []).sort((a,b) => new Date(val(a,['created_at','sent_at'],0)) - new Date(val(b,['created_at','sent_at'],0)))));
     },
     async byLead(leadId){ const rows = await sel('whatsapp_conversations', { eq: { lead_id: leadId } }); return rows[0] || null; },
     async sendMessage(convoId, text, template){
@@ -3033,15 +3041,19 @@ document.addEventListener('submit', async e => {
           propertyType: fd.propertyType, config: '', budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null },
         notes: fd.notes || '',
       });
-      // built-in round-trip verification: re-read the row from the database
+      // built-in round-trip verification: re-read the row and assert the FK values
       if (prodMode()){
         const check = await leadService.getLead(created.id);
         if (!check || !check.id) throw new Error('Insert succeeded but the lead could not be re-read — check the RLS SELECT policy on leads (the row exists).');
+        if (check.createdById && String(check.createdById) !== String(authAgentId()))
+          throw new Error('created_by verification failed — expected your agents.id ' + authAgentId() + ', found ' + check.createdById);
+        if (check.stage && pipelineService.loaded() && !pipelineService.stages().some(s => s.id === check.stage))
+          throw new Error('stage_id ' + check.stage + ' is not a row in pipeline_stages — check the inserted value.');
       }
       // UI-only enrichment: form details with no matching leads columns — visible this session, not persisted
       created.req = { ...created.req, purpose: fd.purpose, propertyType: fd.propertyType, budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null };
       created.notes = fd.notes || '';
-      closeModal(); toast('Lead created' + (prodMode() ? ' — verified in Supabase' : ''));
+      closeModal(); toast('Lead created' + (prodMode() ? ' — verified in Supabase (created_by · stage_id)' : ''));
       renderBadges(); refresh();
     });
     return;
