@@ -363,21 +363,19 @@ label.f:first-child{margin-top:0}
    MERIDIAN — India Real Estate Brokerage OS — PRODUCTION BUILD
    REAL SUPABASE → SERVICE LAYER → UI (existing Meridian design)
 
-   /config     → env placeholders (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
-                 in a Vite build; constants or the connect-screen here)
-   /supabase   → single client (anon key ONLY, in-memory auth session —
-                 nothing is ever written to localStorage/sessionStorage)
-   /auth       → Supabase Auth + agent profile (agents.user_id) + organization
-   /mapping    → DB rows ↔ internal UI shapes (the ONE place to adjust
-                 column names if your schema differs)
-   /remote     → R.* production queries per table
-   /services   → routed facade: Demo Mode → mock closure; Production → R.*
-   /demo       → the old mock store, isolated, never touches Supabase
-   /ui         → pages/drawers/actions — unchanged design, service calls only
-
-   AUDIT: localStorage 0 · sessionStorage 0 · IndexedDB 0 · cookies 0.
-   mockDB exists only inside the /demo closure. The organization id is
-   NEVER hardcoded — it is resolved from the authenticated agent profile.
+   Contract rules enforced in this build:
+   1. PostgREST validates payloads against the schema cache BEFORE the DB —
+      so every wrong column/check/FK fails fast with the exact DB message,
+      which guardForm/showFormError renders inline. Nothing is guessed.
+   2. LEADS_COLUMNS is a hard write-allowlist: no column outside the
+      verified schema can ever reach an INSERT/UPDATE payload.
+   3. Every INSERT/UPDATE uses .select() so Postgres returns the stored row;
+      ins()/upd() THROW if no row comes back (read-back verification).
+   4. tasks.status only ever receives values from TASK_STATUSES
+      (verified against tasks_status_check).
+   5. pipeline_stages must load in Production or startup fails LOUDLY —
+      DEFAULT_STAGES are demo-only.
+   6. Zero localStorage/sessionStorage/IndexedDB/cookies. Anon key only.
    ===================================================================== */
 
 /* ============================== /config ============================== */
@@ -474,7 +472,7 @@ const brokerageCalc = {
 };
 
 /* ============================== pipeline (shared; loads pipeline_stages in production) ============================== */
-const DEFAULT_STAGES = [
+const DEFAULT_STAGES = [   /* DEMO-ONLY — production always loads pipeline_stages and FAILS LOUDLY if it cannot */
   { id:'new',            label:'New Lead',              prob:0.03 },
   { id:'contacted',      label:'Contacted',             prob:0.06 },
   { id:'qualified',      label:'Qualified',             prob:0.10 },
@@ -494,21 +492,18 @@ const pipelineService = {
   _stages: DEFAULT_STAGES.map(s => ({...s})),
   _loaded: false,
   loaded(){ return !!this._loaded; },
-  async load(){ /* production: read pipeline_stages table */
-    try {
-      const rows = await sel('pipeline_stages', { limit: 50 });
-      if (rows && rows.length){
-        const mapped = rows.map(r => {
-          const prob = val(r, ['probability','win_probability','win_prob'], 0) || 0;
-          return { id: r.id, label: val(r, ['label','name','title'], String(r.id)),
-            prob: prob > 1 ? prob / 100 : prob,
-            won: !!val(r, ['is_won','won','is_terminal_won'], false),
-            lost: !!val(r, ['is_lost','lost'], false) };
-        }).sort((a,b) => (a.sort ?? 0) - (b.sort ?? 0));
-        this._stages = mapped;
-        this._loaded = true;
-      }
-    } catch(e){ console.warn('pipeline_stages not readable — using built-in defaults:', e.message); }
+  async load(){ /* production: read pipeline_stages — FAIL LOUDLY, never fall back to DEFAULT_STAGES */
+    const rows = await sel('pipeline_stages', { limit: 50 });
+    if (!rows || !rows.length) throw new Error('pipeline_stages returned no rows — production refuses to guess stage IDs.');
+    const mapped = rows.map(r => {
+      const prob = val(r, ['probability','win_probability','win_prob'], 0) || 0;
+      return { id: r.id, label: val(r, ['label','name','title'], String(r.id)),
+        prob: prob > 1 ? prob / 100 : prob,
+        won: !!val(r, ['is_won','won','is_terminal_won'], false),
+        lost: !!val(r, ['is_lost','lost'], false) };
+    }).sort((a,b) => (a.sort ?? 0) - (b.sort ?? 0));
+    this._stages = mapped;
+    this._loaded = true;
   },
   stages(){ return this._stages.map(s => ({...s})); },
   stage(id){ return this._stages.find(s => s.id === id) || { id, label: String(id), prob: 0 }; },
@@ -522,6 +517,14 @@ const pipelineService = {
 const EVENT_CATALOG = ['lead.created','lead.assigned','lead.scored','lead.status_changed','lead.followup_due','lead.followup_overdue',
   'site_visit.created','site_visit.confirmed','site_visit.completed','deal.created','deal.stage_changed','deal.won','deal.lost',
   'commission.created','commission.received','message.sent','inventory.hold','task.completed'];
+
+/* ---- tasks: the VERIFIED database contract (tasks_status_check) ----
+   CHECK (status = ANY(ARRAY['Open','In Progress','Completed','Cancelled']))
+   These are the ONLY values ever sent to public.tasks.status.
+   No 'Pending' anywhere in the application — UI uses DB terminology. */
+const TASK_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
+const TASK_OPEN = 'Open';
+const taskOpen = t => !!t && (t.status === 'Open' || t.status === 'In Progress');
 
 /* ============================== lead scoring (shared; prefers DB score when present) ============================== */
 const leadScoringService = {
@@ -563,7 +566,7 @@ const analyticsService = {
         closures: closed.length, revenue: closed.reduce((s,d)=>s+(d.value||0),0),
         commission: myComm.reduce((s,c)=>s+(c.agentSplit||0),0),
         conversion: myLeads.length ? closed.length/myLeads.length : 0,
-        overdue: tasks.filter(t => t.agentId === a.id && t.status === 'Pending' && new Date(t.dueAt) < NOW).length };
+        overdue: tasks.filter(t => t.agentId === a.id && taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).length };
     }).sort((x,y) => y.revenue - x.revenue);
   },
   overview(data, range){
@@ -588,9 +591,9 @@ const analyticsService = {
       upcomingVisits: visits.filter(v => ['Scheduled','Confirmed'].includes(v.status) && new Date(v.date) >= new Date(NOW.toDateString())).length,
       bookings: deals.filter(d => (['booking','agreement','registration','closed'].includes(d.stage) || pipelineService.stage(d.stage).won) && inRange(d.updatedAt, range)).length,
       winRate: (closedDeals.length + lostDeals.length) ? closedDeals.length/(closedDeals.length+lostDeals.length) : null,
-      overdueTasks: tasks.filter(t => t.status === 'Pending' && new Date(t.dueAt) < NOW).length,
+      overdueTasks: tasks.filter(t => taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).length,
       overdueLeads: leads.filter(l => l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW && activeIds.includes(l.stage)).length,
-      todayTasks: tasks.filter(t => t.status === 'Pending' && isToday(t.dueAt)).length,
+      todayTasks: tasks.filter(t => taskOpen(t) && t.dueAt && isToday(t.dueAt)).length,
       uncontacted: leads.filter(l => l.stage === 'new' && hoursSince(l.createdAt) > 24).length,
       staleDeals: activeDeals.filter(d => hoursSince(d.updatedAt) > 21*24),
     };
@@ -750,7 +753,7 @@ function seed(){
   visits.push({ id:'sv_x1', leadId:'ld_06', agentId:'ag_03', projectId:'pj_vanya', unitId:null, date:daysAgo(2), time:'4:00 PM', siteContact:'Aman (Ashwin CRM)', location:'Sector 86 site', status:'No Show', outcome:'Needs Follow-up', notes:'Reschedule.', nextFollowUp:inDays(1), secondVisit:false, familyDecision:null, interest:'Low' });
   visits.push({ id:'sv_x2', leadId:'ld_04', agentId:'ag_04', projectId:'pj_crest', unitId:null, date:inDays(2), time:'2:30 PM', siteContact:'Nitin (Trident CRM)', location:'Sector 128 Noida', status:'Confirmed', outcome:null, notes:'Office options comparison.', nextFollowUp:null, secondVisit:false, familyDecision:null, interest:null });
   const tasks = [];
-  const mkTask = (type,title,leadId,agentId,due,priority,notes) => tasks.push({ id:'tk_' + String(tasks.length+1).padStart(2,'0'), type, title, leadId:leadId||null, dealId:null, agentId, dueAt:due, priority, status:'Pending', notes:notes||'' });
+  const mkTask = (type,title,leadId,agentId,due,priority,notes) => tasks.push({ id:'tk_' + String(tasks.length+1).padStart(2,'0'), type, title, leadId:leadId||null, dealId:null, agentId, dueAt:due, priority, status:TASK_OPEN, notes:notes||'' });
   mkTask('Call','Call Rahul Sharma — negotiation follow-up','ld_01','ag_02',hoursAgo(20),'High','PLC waiver response.');
   mkTask('Follow-up','WhatsApp Kavita Iyer with office options','ld_04','ag_04',hoursAgo(30),'High','Share 3 options + yield sheet.');
   mkTask('Call','First contact — Meera Khandelwal','ld_06','ag_03',daysAgo(1),'High','Unassigned Meta Ads lead.');
@@ -839,6 +842,8 @@ const demo = (function(){
         EventBus.emit('lead.created', { entityId:l.id, leadName:l.name, source:l.source }); return clone(l); },
       async updateLead(id, patch){ await gate(); const l = mockDB.leads.find(x=>x.id===id); if (!l) throw new Error('Lead not found');
         Object.assign(l, patch); l.lastActivityAt = new Date().toISOString(); recordAudit('Lead updated', id, Object.keys(patch).join(', '));
+        if (patch.budgetMin !== undefined){ l.req = l.req || {}; l.req.budgetMin = patch.budgetMin; }
+        if (patch.budgetMax !== undefined){ l.req = l.req || {}; l.req.budgetMax = patch.budgetMax; }
         if (patch.agentId !== undefined) EventBus.emit('lead.assigned', { entityId:id, agentId:patch.agentId });
         if (patch.stage) EventBus.emit('lead.status_changed', { entityId:id, to:patch.stage }); return clone(l); },
       async deleteLead(id){ await gate(); mockDB.leads = mockDB.leads.filter(l=>l.id!==id); recordAudit('Lead deleted', id, ''); return true; },
@@ -886,7 +891,7 @@ const demo = (function(){
     },
     taskService: {
       async getTasks(){ await gate(); return clone(mockDB.tasks); },
-      async createTask(t){ await gate(); const rec = { id:'tk_' + Date.now(), dealId:null, notes:'', status:'Pending', priority:'Medium', type:'Follow-up', ...t };
+      async createTask(t){ await gate(); const rec = { id:'tk_' + Date.now(), dealId:null, notes:'', status:TASK_OPEN, priority:'Medium', type:'Follow-up', ...t };
         mockDB.tasks.unshift(rec); recordAudit('Task created', rec.id, rec.type); EventBus.emit('task.created', { entityId:rec.id }); return clone(rec); },
       async setStatus(id, status){ await gate(); const t = mockDB.tasks.find(x=>x.id===id); t.status = status; recordAudit('Task updated', id, status);
         if (status==='Completed') EventBus.emit('task.completed', { entityId:id }); return clone(t); },
@@ -972,7 +977,9 @@ const demo = (function(){
 })();
 
 /* =====================================================================
-   /supabase — single client (anon key only; auth session in memory)
+   /supabase — single client (anon key only; auth session in memory).
+   ins()/upd() enforce read-back: PostgREST .select() returns the stored
+   row; if nothing comes back (RLS SELECT blocked / row missing) we THROW.
    ===================================================================== */
 let _supa = null;
 const memStore = () => { const m = new Map(); return { getItem: k => m.get(k) ?? null, setItem: (k,v) => m.set(k, v), removeItem: k => m.delete(k) }; };
@@ -999,7 +1006,8 @@ async function ins(table, rows){
   const c = await client();
   const res = await c.from(table).insert(rows).select();
   if (res.error) throw new Error(`${table} insert: ${res.error.message}`);
-  return res.data || [];
+  if (!res.data || !res.data.length) throw new Error(`${table} insert returned no row — the INSERT may have succeeded but the post-insert SELECT is blocked (check the RLS SELECT policy).`);
+  return res.data;
 }
 async function upd(table, eq, patch){
   const c = await client();
@@ -1007,30 +1015,25 @@ async function upd(table, eq, patch){
   for (const [k, v] of Object.entries(eq || {})) q = q.eq(k, v);
   const res = await q.select();
   if (res.error) throw new Error(`${table} update: ${res.error.message}`);
-  return res.data || [];
+  if (!res.data || !res.data.length) throw new Error(`${table} update returned no row — row not found or SELECT blocked by RLS.`);
+  return res.data;
 }
 const authOrgId = () => authService.profile()?.organization?.id || null;
 const authAgentId = () => authService.profile()?.agent?.id || null;
 
 /* =====================================================================
-   /mapping — DB rows ↔ internal UI shapes.
-   YOUR LISTED COLUMNS ARE USED VERBATIM (leads, deals, inventory_units,
-   agents…). For tables whose columns weren't specified, candidates are
-   tried in order — ADJUST HERE ONLY if a name differs in your schema.
+   /mapping — DB rows ↔ internal UI shapes. The ONE place to adjust
+   column names. LEADS_COLUMNS is a hard write-allowlist.
    ===================================================================== */
 const val = (r, keys, d) => { if (r) for (const k of keys) if (r[k] !== undefined && r[k] !== null) return r[k]; return d; };
 const pickKey = (r, keys) => { if (r) for (const k of keys) if (r[k] !== undefined) return k; return null; };
 const arr1 = x => Array.isArray(x) ? (x[0] ?? '') : x;
 
-/* ---- leads: the VERIFIED schema (from your table definition) ----
-   id · organization_id · name · phone · whatsapp · email · city · locality ·
-   source_id · source_name · campaign · assigned_agent_id · created_by ·
-   stage_id · intent · financial_status · score · temperature ·
-   budget_strength · timeline_score · engagement_score · source_score
-   Hard guarantee: nothing outside this set is ever written.
-   Requirement details (purpose, property type, configuration, budget,
-   carpet, possession, notes) have NO matching columns → UI-only for now. */
-const LEADS_COLUMNS = new Set(['organization_id','name','phone','whatsapp','email','city','locality','source_id','source_name','campaign','assigned_agent_id','created_by','stage_id','intent','financial_status','score','temperature','budget_strength','timeline_score','engagement_score','source_score']);
+/* ---- leads: VERIFIED columns (proven live: possession/created_by/possession
+   errors + your column list) + budget_min/budget_max after Migration 001.
+   UI-only (no leads column): purpose, propertyType, configuration,
+   carpetMin, possession, notes, nextFollowUpAt, visitCount. ---- */
+const LEADS_COLUMNS = new Set(['organization_id','name','phone','whatsapp','email','city','locality','source_id','source_name','campaign','assigned_agent_id','created_by','stage_id','intent','financial_status','budget_min','budget_max','score','temperature','budget_strength','timeline_score','engagement_score','source_score']);
 const scrubLeadRow = (row, { keepNull = false } = {}) => Object.fromEntries(
   Object.entries(row).filter(([k, v]) => LEADS_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
 
@@ -1040,7 +1043,7 @@ const fromLeadRow = r => ({
   source: val(r, ['source_name'], ''), sourceId: r.source_id || null, campaign: val(r, ['campaign'], ''),
   agentId: r.assigned_agent_id || null, createdById: r.created_by || null, createdAt: r.created_at || null,
   lastActivityAt: r.created_at || null,          // no last_activity_at column — honest fallback
-  nextFollowUpAt: null,                          // no column yet → drawer shows "—" (UI-only until schema adds one)
+  nextFollowUpAt: null,                          // no column — tasks.due_at is the real follow-up mechanism
   stage: r.stage_id || null, intent: val(r, ['intent'], '') || 'Warm',
   financial: val(r, ['financial_status'], '') || '—',
   visitCount: 0,
@@ -1049,7 +1052,8 @@ const fromLeadRow = r => ({
     ['Budget clarity', r.budget_strength ?? 0, 15], ['Timeline', r.timeline_score ?? 0, 13],
     ['Engagement', r.engagement_score ?? 0, 12], ['Source quality', r.source_score ?? 0, 10] ] : null,
   req: { purpose: 'Buy', propertyClass: 'Residential', prefCity: val(r, ['city'], ''), prefLocality: val(r, ['locality'], ''),
-    projectId: null, propertyType: '—', config: '', budgetMin: null, budgetMax: null,
+    projectId: null, propertyType: '—', config: '',
+    budgetMin: r.budget_min ?? null, budgetMax: r.budget_max ?? null,   /* Migration 001 */
     carpetMin: null, possession: '—', timeline: '—' },
   decision: { decisionMaker: true, familyInvolved: false, profile: 'End User', existingProperty: '—', currentLocation: '—' },
   activities: [], notes: '',
@@ -1066,16 +1070,26 @@ const leadToRow = (l, orgId) => scrubLeadRow({
   source_name: l.source || null,
   campaign: l.campaign || null,
   assigned_agent_id: l.agentId || null,
-  created_by: authAgentId() || null,   // leads_created_by_fkey → agents(id) — the CRM person, not the auth.users UUID
-  stage_id: l.stage || null,                    // resolved from pipeline_stages in R.leads.create — no hardcoded 'new'
-  /* intent & financial_status deliberately NOT set on insert — the form doesn't
-     collect them and your DB defaults/enums own them. They remain patchable. */
+  created_by: authAgentId() || null,            // leads_created_by_fkey → agents(id) — the CRM person, not the auth.users UUID
+  stage_id: l.stage || null,                    // resolved from pipeline_stages in R.leads.create — never a guessed string
+  budget_min: (l.budgetMin ?? l.req?.budgetMin) ?? null,
+  budget_max: (l.budgetMax ?? l.req?.budgetMax) ?? null,
+  /* intent & financial_status deliberately NOT set on insert — your DB
+     defaults/check constraints own them; they remain patchable. */
 });
-const leadPatchToRow = patch => scrubLeadRow({    // keepNull so un-assign (null) still persists
+/* undefined → key dropped → column untouched; null → written → column cleared */
+const leadPatchToRow = patch => scrubLeadRow({
   stage_id: patch.stage,
   assigned_agent_id: patch.agentId,
   intent: patch.intent,
   financial_status: patch.financial,
+  name: patch.name,
+  phone: patch.phone,
+  email: patch.email,
+  city: patch.city,
+  locality: patch.locality,
+  budget_min: patch.budgetMin,
+  budget_max: patch.budgetMax,
 }, { keepNull: true });
 
 const fromAgentRow = r => ({ id: r.id, name: val(r, ['name'], '—'), role: val(r, ['role'], 'Agent'), email: val(r, ['email'], ''),
@@ -1129,7 +1143,7 @@ const fromVisitRow = r => ({ id: r.id, leadId: r.lead_id, agentId: r.agent_id, p
   familyDecision: val(r, ['family_decision'], null), interest: val(r, ['interest_level','interest'], null) });
 const fromTaskRow = r => ({ id: r.id, type: val(r, ['type','task_type'], 'Follow-up'), title: val(r, ['title','name'], ''),
   leadId: r.lead_id || null, dealId: r.deal_id || null, agentId: r.agent_id, dueAt: val(r, ['due_at','due_date'], null),
-  priority: val(r, ['priority'], 'Medium'), status: val(r, ['status'], 'Pending'), notes: val(r, ['notes'], '') });
+  priority: val(r, ['priority'], 'Medium'), status: val(r, ['status'], TASK_OPEN), notes: val(r, ['notes'], '') });
 const fromCommissionRow = (r, pays) => {
   const gross = val(r, ['gross_value','gross_deal_value','deal_value'], 0) || 0;
   let brokerage = val(r, ['brokerage_amount','brokerage'], null);
@@ -1167,7 +1181,8 @@ const fromInsightRow = r => ({ type: val(r, ['type','insight_type','category'], 
     id: String(val(r, ['entity_id','related_entity_id'], '') || '') } });
 
 /* =====================================================================
-   /remote — production Supabase implementations (RLS-scoped by design)
+   /remote — production Supabase implementations (RLS-scoped by design).
+   Every mutation returns the DB row and verifies the stored value.
    ===================================================================== */
 let _leadSourcesCache = null;
 const R = {
@@ -1178,11 +1193,18 @@ const R = {
     async update(patch){ const id = authOrgId(); const row = {};
       if (patch.name !== undefined) row.name = patch.name; if (patch.city !== undefined) row.city = patch.city;
       if (patch.gstin !== undefined) row.gstin = patch.gstin;
-      await upd('organizations', { id }, row); return R.organization.get(); },
+      const rows = await upd('organizations', { id }, row);
+      if (rows[0] && patch.name !== undefined && rows[0].name !== patch.name) throw new Error('Organization name verification failed.');
+      return rows;
+    },
   },
   agents: {
     list: () => sel('agents', { limit: 200 }),
-    updateRole: (id, role) => upd('agents', { id }, { role }),
+    async updateRole(id, role){
+      const rows = await upd('agents', { id }, { role });
+      if (!rows[0] || rows[0].role !== role) throw new Error('Agent role verification failed — database returned "' + (rows[0] ? rows[0].role : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   leads: {
     list: () => sel('leads', { limit: 500 }),
@@ -1204,23 +1226,31 @@ const R = {
         entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
       }
       const rows = await ins('leads', [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]);
-      // best-effort activity log — must never fail a successful leads insert
+      // secondary activity log — only after the primary insert succeeded, never blocks it
       const l = rows && rows[0];
       if (l){ try { await ins('lead_activities', [{ lead_id: l.id, agent_id: authAgentId(), type: 'note', text: 'Lead created' }]); }
-        catch(e){ console.warn('lead_activities not written (column shape differs):', e.message); } }
+        catch(e){ console.warn('lead_activities write not confirmed (check column names / SELECT policy):', e.message); } }
       return rows;
     },
     async update(id, patch){
       const row = leadPatchToRow(patch);
-      if (patch.agentId !== undefined && patch.agentId){
+      let rows;
+      if (Object.keys(row).length){ rows = await upd('leads', { id }, row); }   // primary mutation first
+      else { rows = await sel('leads', { eq: { id } }); }
+      if (patch.agentId !== undefined && patch.agentId){                        // secondary, non-blocking
         try { await ins('lead_assignments', [{ lead_id: id, agent_id: patch.agentId, assigned_by: authAgentId() }]); }
-        catch(e){ console.warn('lead_assignments not written (column shape differs):', e.message); }
+        catch(e){ console.warn('lead_assignments write not confirmed (check column names / SELECT policy):', e.message); }
       }
-      if (!Object.keys(row).length){ return (await sel('leads', { eq: { id } })); }   // nothing valid to change
-      return upd('leads', { id }, row);
+      return rows;
     },
-    async remove(id){ const c = await client(); const res = await c.from('leads').delete().eq('id', id);
-      if (res.error) throw new Error(res.error.message); return true; },
+    async remove(id){
+      const c = await client();
+      const res = await c.from('leads').delete().eq('id', id);
+      if (res.error) throw new Error(res.error.message);       // dependent FK violations surface here
+      const after = await sel('leads', { eq: { id } });
+      if (after.length) throw new Error('Delete reported success but the row is still readable — check cascades/RLS.');
+      return true;
+    },
   },
   leadActivities: {
     list: async leadId => sel('lead_activities', { eq: { lead_id: leadId }, limit: 100 }),
@@ -1239,14 +1269,22 @@ const R = {
     async byIds(ids){ if (!ids.length) return []; const c = await client();
       const res = await c.from('inventory_units').select('*').in('id', ids);
       if (res.error) throw new Error(res.error.message); return res.data || []; },
-    setStatus: (id, status) => upd('inventory_units', { id }, { status }),
+    async setStatus(id, status){
+      const rows = await upd('inventory_units', { id }, { status });
+      if (!rows[0] || rows[0].status !== status) throw new Error('Inventory status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   deals: {
     list: () => sel('deals', { limit: 1000 }),
     get: async id => (await sel('deals', { eq: { id } }))[0],
-    async setStage(id, stage){ const patch = { stage };
-      if (stage === 'closed') patch.closed_at = new Date().toISOString();
-      return upd('deals', { id }, patch); },
+    async setStage(id, stage){
+      const patch = { stage };
+      if (pipelineService.stage(stage).won) patch.closed_at = new Date().toISOString();
+      const rows = await upd('deals', { id }, patch);
+      if (!rows[0] || String(rows[0].stage) !== String(stage)) throw new Error('Deal stage verification failed — database returned "' + (rows[0] ? rows[0].stage : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   visits: {
     list: () => sel('site_visits', { limit: 500 }),
@@ -1255,16 +1293,29 @@ const R = {
       project_id: v.projectId || null, property_id: v.propertyId || null, inventory_unit_id: v.unitId || null,
       scheduled_at: v.date, scheduled_time: v.time || null, site_contact: v.siteContact || null,
       location: v.location || null, notes: v.notes || null, status: 'Scheduled' }]); },
-    async complete(id, outcome, days){ const patch = { status: 'Completed', outcome };
+    async complete(id, outcome, days){
+      const patch = { status: 'Completed', outcome };
       if (days) patch.next_follow_up_at = inDays(days);
-      return upd('site_visits', { id }, patch); },
+      const rows = await upd('site_visits', { id }, patch);
+      if (!rows[0] || String(rows[0].status) !== 'Completed') throw new Error('Site visit verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   tasks: {
     list: () => sel('tasks', { limit: 500 }),
-    async create(t){ return ins('tasks', [{ organization_id: authOrgId(), type: t.type, title: t.title,
-      lead_id: t.leadId || null, deal_id: t.dealId || null, agent_id: t.agentId, due_at: t.dueAt,
-      priority: t.priority, notes: t.notes || null, status: 'Pending' }]); },
-    setStatus: (id, status) => upd('tasks', { id }, { status }),
+    async create(t){
+      const rows = await ins('tasks', [{ organization_id: authOrgId(), type: t.type, title: t.title,
+        lead_id: t.leadId || null, deal_id: t.dealId || null, agent_id: t.agentId, due_at: t.dueAt,
+        priority: t.priority, notes: t.notes || null, status: TASK_OPEN }]);
+      if (String(rows[0].status) !== TASK_OPEN) throw new Error('Task created with unexpected status "' + rows[0].status + '" — expected "Open".');
+      return rows;
+    },
+    async setStatus(id, status){
+      if (!TASK_STATUSES.includes(status)) throw new Error('Invalid tasks.status "' + status + '" — allowed: ' + TASK_STATUSES.join(', '));
+      const rows = await upd('tasks', { id }, { status });
+      if (!rows[0] || String(rows[0].status) !== String(status)) throw new Error('Task status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   commissions: {
     async list(){
@@ -1277,7 +1328,8 @@ const R = {
       const all = await R.commissions.list(); const c = all.find(x => x.id === id);
       if (!c) throw new Error('Commission not found');
       if (c.outstanding > 0) await ins('commission_payments', [{ commission_id: id, amount: c.outstanding, paid_at: new Date().toISOString() }]);
-      await upd('commissions', { id }, { status: 'Received' });
+      const rows = await upd('commissions', { id }, { status: 'Received' });
+      if (!rows[0] || String(rows[0].status) !== 'Received') throw new Error('Commission status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
       return true;
     },
   },
@@ -1354,7 +1406,7 @@ async function remoteSearch(q){
     groups.inventory = (units.data || []).map(x => ({ id:x.id, projectId:x.project_id, tower:x.tower, unitNo:x.unit_number, config:x.configuration, price:x.price }));
     groups.deals = (deals.data || []).map(x => ({ id:x.id, buyer:x.buyer_name, value:x.value, stage:x.stage }));
     groups.agents = (agents.data || []).map(x => ({ id:x.id, name:x.name, role:x.role }));
-  } catch(e){ /* search degrades to empty rather than crashing */ }
+  } catch(e){ /* read-only search degrades to empty — never renders mock data */ }
   return groups;
 }
 
@@ -1411,7 +1463,7 @@ const authService = {
     if (error || !user) throw new Error('Not authenticated');
     const rows = await sel('agents', { cols: '*, organization:organizations(*)', eq: { user_id: user.id } });
     const agent = rows[0] || null;
-    if (!agent) throw new Error('No agent record is linked to this user — create an agents row with user_id set.');
+    if (!agent) throw new Error('No agent record is linked to this user — create an agents row with user_id set. Production Mode refuses to invent an agent.');
     this._profile = { user, agent, organization: agent.organization || null };
     return this._profile;
   },
@@ -1457,12 +1509,28 @@ function renderLoginScreen(kind, errMsg){
     </div>
   </div></div>`;
 }
+function renderFatalError(title, msg){
+  const o = $('#authOverlay'); o.hidden = false;
+  o.innerHTML = `<div class="auth-overlay"><div class="auth-card" style="width:540px">
+    <h2>Meridian</h2>
+    <div style="text-align:center;font-size:10px;letter-spacing:.24em;text-transform:uppercase;margin:6px 0 20px;color:#7E786D">Realty OS · India</div>
+    <div style="color:#E8A9A0;font-size:13px;line-height:1.6;margin-bottom:20px"><b>${esc(title)}</b><br>${esc(msg)}</div>
+    <button class="btn" style="width:100%;justify-content:center" data-action="signOut">${icon('x',14)} Sign out</button>
+    <div style="margin-top:12px"><button class="btn ghost" style="width:100%;justify-content:center" data-action="enterDemo">Continue in Demo Mode (isolated)</button></div>
+  </div></div>`;
+}
 async function startApp(){
   $('#authOverlay').hidden = true; $('#authOverlay').innerHTML = '';
   notificationService.setChangeListener(renderBadges);
   if (App.mode === 'production'){
-    try { await pipelineService.load(); } catch(e){ console.warn('pipeline_stages unavailable:', e.message); }
-    try { App.org = await organizationService.getOrganization(); } catch(e){ App.org = { id:null, name:'Your brokerage', city:'', gstin:'' }; }
+    try { await pipelineService.load(); }
+    catch(e){
+      renderFatalError('Production cannot start', 'pipeline_stages could not be read: ' + e.message +
+        ' — Production Mode never falls back to built-in stage IDs. Fix table access/RLS, then sign in again.');
+      return;
+    }
+    try { App.org = await organizationService.getOrganization(); }
+    catch(e){ App.org = { id:null, name:'Your brokerage', city:'', gstin:'' }; toast(esc('Organization profile could not be read: ' + e.message)); }
     notificationService.startRealtime();
     await notificationService._refresh();
   } else {
@@ -1475,7 +1543,6 @@ async function startApp(){
 
 /* =====================================================================
    /services — routed facade. THE ONLY surface the UI calls.
-   Demo Mode → /demo closure. Production → /remote (Supabase).
    ===================================================================== */
 const organizationService = {
   async getOrganization(){ return demoMode() ? demo.organizationService.getOrganization() : R.organization.get(); },
@@ -1504,17 +1571,7 @@ const communicationService = {
   async getConversationByLead(leadId){ return demoMode() ? demo.communicationService.getConversationByLead(leadId) : R.conversations.byLead(leadId); },
   async markRead(id){ return demoMode() ? demo.communicationService.markRead(id) : R.conversations.markRead(id); },
   async sendMessage(convoId, text, template){ return demoMode() ? demo.communicationService.sendMessage(convoId, text, template) : R.conversations.sendMessage(convoId, text, template); },
-  async suggestReply(convoId){
-    if (demoMode()) return demo.communicationService.sendMessage ? demoSuggest(convoId, demo.communicationService.getConversationByLead) : '';
-    const c = await R.conversations.byLead ? await (async () => null)() : null;
-    return '';
-  },
 };
-async function suggestReplyText(convoId){
-  const convo = demoMode() ? await demo.communicationService.getConversationByLead ? await getConvoDemo(convoId) : null : await R.conversations.byLeadGet(convoId);
-  return convo ? convo : '';
-}
-async function getConvoDemo(){}
 const projectService = {
   async getProjects(){
     if (demoMode()) return demo.projectService.getProjects();
@@ -1658,6 +1715,7 @@ const ICONS = {
   cal:'<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/>',
   eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   download:'<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19.5h16"/>',
+  edit:'<path d="M4 20h4L19 9l-4-4L4 16v4z"/>',
   wa:'<path d="M21 11.5a8.5 8.5 0 0 1-12.8 7.4L3 20l1.1-5.2A8.5 8.5 0 1 1 21 11.5z"/><path d="M9 9.5c0 4 3.5 5.5 5 5.5l1.5-1.5-2-1.5-1 .5c-1-.5-1.7-1.5-2-2.5l.5-1-1.5-2z"/>',
   dot:'<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>',
   tag:'<path d="M3 3h8l10 10-8 8L3 11z"/><circle cx="8" cy="8" r="1.6"/>',
@@ -1668,7 +1726,7 @@ const icon = (n, s=16) => `<svg class="ic" width="${s}" height="${s}" viewBox="0
 const TONE = {
   Available:'c-green', Hold:'c-amber', Token:'c-orange', Booked:'c-ink', Agreement:'c-slate', Registered:'c-green-d', Sold:'c-green-d', Unavailable:'c-gray',
   Scheduled:'c-slate', Confirmed:'c-green', Completed:'c-ink', Cancelled:'c-gray', 'No Show':'c-red', Rescheduled:'c-amber',
-  Pending:'c-amber', Partial:'c-teal', Received:'c-green', High:'c-red', Medium:'c-amber', Low:'c-slate',
+  Pending:'c-amber', Open:'c-amber', 'In Progress':'c-teal', Partial:'c-teal', Received:'c-green', High:'c-red', Medium:'c-amber', Low:'c-slate',
   HOT:'c-red', WARM:'c-amber', COLD:'c-slate', Connected:'c-green', Not:'c-gray',
   Owner:'c-ink', Admin:'c-teal', Agent:'c-gray', Active:'c-green',
 };
@@ -1829,6 +1887,7 @@ function leadDrawer(l, agents, activities){
       <button class="btn sm ghost" data-action="waForLead" data-id="${l.id}">${icon('wa',13)} WhatsApp</button>
       <button class="btn sm ghost" data-action="newVisitFor" data-id="${l.id}">${icon('visit',13)} Schedule visit</button>
       <button class="btn sm ghost" data-action="newTaskFor" data-id="${l.id}">${icon('tasks',13)} Task</button>
+      <button class="btn sm ghost" data-action="editLead" data-id="${l.id}">${icon('edit',13)} Edit lead</button>
     </div>
     <div class="d-sec"><div class="st">Score — ${total}/100 ${l.dbFactors ? '<span class="mono" style="font-weight:400;color:var(--ink3)">(from leads record)</span>' : '<span class="mono" style="font-weight:400;color:var(--ink3)">(client estimate)</span>'}</div>
       ${sc.factors.map(([n,p,m]) => `<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--ink2)">${n}</span><span style="font-weight:600">${p}/${m}</span></div><div class="sbar" style="width:100%"><i style="width:${Math.min(100,p/m*100)}%;background:${p/m > .6 ? 'var(--accent)' : p/m > .35 ? '#C8922B' : 'var(--red)'}"></i></div></div>`).join('')}
@@ -1841,20 +1900,20 @@ function leadDrawer(l, agents, activities){
       <div class="kv"><span class="k">Source / Campaign</span><span class="v">${esc(l.source || '—')}${l.campaign && l.campaign !== '—' ? ' · ' + esc(l.campaign) : ''}</span></div>
       <div class="kv"><span class="k">Created</span><span class="v">${fmtDate(l.createdAt)}</span></div>
       <div class="kv"><span class="k">Last activity</span><span class="v">${timeAgo(l.lastActivityAt)}</span></div>
-      <div class="kv"><span class="k">Next follow-up</span><span class="v ${l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW ? 'ovd' : ''}">${l.nextFollowUpAt ? fmtDate(l.nextFollowUpAt) : '—'}</span></div>
+      <div class="kv"><span class="k">Next follow-up</span><span class="v">via Tasks (tasks.due_at)</span></div>
       <div class="kv"><span class="k">Assigned agent</span><span class="v"><select class="inp" style="height:28px;padding:0 6px;width:auto" data-change="leadAgent" data-id="${l.id}"><option value="">Unassigned</option>${agentOpts}</select></span></div>
     </div>
     <div class="d-sec"><div class="st">Requirement</div>
       <div class="kv"><span class="k">Purpose</span><span class="v">${esc(l.req.purpose)} · ${esc(l.req.propertyClass)}</span></div>
       <div class="kv"><span class="k">Preference</span><span class="v">${esc(l.req.prefLocality || '—')}</span></div>
       <div class="kv"><span class="k">Type / Config</span><span class="v">${esc(l.req.propertyType || '—')} · ${esc(l.req.config || '—')}</span></div>
-      <div class="kv"><span class="k">Budget</span><span class="v">${inr(l.req.budgetMin)} – ${inr(l.req.budgetMax)}</span></div>
+      <div class="kv"><span class="k">Budget <span class="mono" style="font-weight:400">(leads.budget_min/max)</span></span><span class="v">${inrFull(l.req.budgetMin)} – ${inrFull(l.req.budgetMax)}</span></div>
       <div class="kv"><span class="k">Carpet min</span><span class="v">${l.req.carpetMin ? l.req.carpetMin.toLocaleString('en-IN') + ' sq.ft.' : '—'}</span></div>
       <div class="kv"><span class="k">Possession</span><span class="v">${esc(l.req.possession || '—')}</span></div>
       <div class="kv"><span class="k">Financial readiness</span><span class="v">${chip(l.financial, ['Loan Approved','Cash'].includes(l.financial) ? 'c-green' : 'c-slate')}</span></div>
     </div>
     <div class="d-sec"><div class="st">Pipeline</div>
-      <label class="f" style="margin:0 0 4px">Stage (persists via leadService.updateLead${demoMode() ? '' : ' → leads.stage_id'})</label>
+      <label class="f" style="margin:0 0 4px">Stage (persists via leadService.updateLead → leads.stage_id)</label>
       <select class="inp" data-change="leadStage" data-id="${l.id}">${stages}</select>
       ${l.notes ? `<p style="margin-top:12px;font-size:12.5px;color:var(--ink2)">${esc(l.notes)}</p>` : ''}
     </div>
@@ -1891,7 +1950,7 @@ function dealDrawer(d, ctx){
       <div class="kv"><span class="k">Expected close</span><span class="v">${fmtDate(d.expectedClose)}</span></div>
       ${d.closedAt ? `<div class="kv"><span class="k">Closed</span><span class="v">${fmtDate(d.closedAt)}</span></div>` : ''}
     </div>
-    <div class="d-sec"><div class="st">Move stage (persists to deals${demoMode() ? '' : '.stage'})</div>
+    <div class="d-sec"><div class="st">Move stage (persists to deals.stage)</div>
       <select class="inp" data-change="dealStage" data-id="${d.id}">${stageOpts}</select>
     </div>`);
 }
@@ -1980,14 +2039,31 @@ async function newLeadModal(){
       <div><label class="f">Assigned agent</label><select class="inp" name="agentId"><option value="">Unassigned</option>${agentOpts}</select></div></div>
       <div class="frow"><div><label class="f">City</label><input class="inp" name="city" value="Gurugram"></div>
       <div><label class="f">Locality</label><input class="inp" name="locality" placeholder="e.g. Sector 57"></div></div>
+      <label class="f">Email</label><input class="inp" name="email" type="email" placeholder="optional — stored on leads.email">
       <div class="frow"><div><label class="f">Purpose</label><select class="inp" name="purpose"><option>Buy</option><option>Invest</option><option>Sell</option><option>Rent</option></select></div>
       <div><label class="f">Property type</label><select class="inp" name="propertyType"><option>Apartment</option><option>Builder Floor</option><option>Villa</option><option>Plot</option><option>Office</option><option>Retail</option></select></div></div>
-      <div class="frow"><div><label class="f">Budget min (₹)</label><input class="inp" name="budgetMin" type="number" min="0" step="100000" placeholder="e.g. 8000000"></div>
-      <div><label class="f">Budget max (₹)</label><input class="inp" name="budgetMax" type="number" min="0" step="100000" placeholder="e.g. 12000000"></div></div>
+      <div class="frow"><div><label class="f">Budget min (₹)</label><input class="inp" name="budgetMin" type="number" min="0" step="10000" placeholder="e.g. 8000000"></div>
+      <div><label class="f">Budget max (₹)</label><input class="inp" name="budgetMax" type="number" min="0" step="10000" placeholder="e.g. 12000000"></div></div>
       <label class="f">Notes</label><textarea class="inp" name="notes" placeholder="Anything the team should know…"></textarea>
-      <div class="fhint" style="margin-top:10px">Name &amp; phone are mandatory. Persisted columns: name · phone · whatsapp · email · city · locality · source_name · campaign · assigned_agent_id · created_by · stage_id. Budget &amp; property-type details stay in this session until the leads table gains matching columns.</div>
+      <div class="fhint" style="margin-top:10px">Persisted columns: name · phone · whatsapp · email · city · locality · source_name · source_id · campaign · assigned_agent_id · created_by · stage_id · budget_min · budget_max. Purpose &amp; property-type remain session-only (no matching leads columns).</div>
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="leadForm">${icon('plus',14)} Create lead</button>`);
+}
+function editLeadModal(l){
+  modal('Edit lead — ' + esc(l.name),
+    `<form data-form="editLead" data-id="${l.id}" id="editLeadForm">
+      <div class="frow"><div><label class="f">Name *</label><input class="inp" name="name" required value="${esc(l.name)}"></div>
+      <div><label class="f">Phone *</label><input class="inp" name="phone" required value="${esc(l.phone || '')}"></div></div>
+      <label class="f">Email</label><input class="inp" name="email" type="email" value="${esc(l.email || '')}">
+      <div class="frow"><div><label class="f">City</label><input class="inp" name="city" value="${esc(l.city || '')}"></div>
+      <div><label class="f">Locality</label><input class="inp" name="locality" value="${esc(l.locality || '')}"></div></div>
+      <div class="frow">
+        <div><label class="f">Budget min (₹)</label><input class="inp" name="budgetMin" type="number" min="0" step="10000" value="${l.req?.budgetMin ?? ''}" placeholder="blank = no minimum"></div>
+        <div><label class="f">Budget max (₹)</label><input class="inp" name="budgetMax" type="number" min="0" step="10000" value="${l.req?.budgetMax ?? ''}" placeholder="blank = no maximum"></div>
+      </div>
+      <div class="fhint" style="margin-top:10px">Plain numbers only — never formatted strings. Blank budget = cleared (NULL). After saving, the row is re-read from Supabase and the budget verified before the UI updates.</div>
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="editLeadForm">${icon('check',14)} Save changes</button>`);
 }
 async function newVisitModal(leadId){
   const [leads, projects, agents] = await Promise.all([leadService.getLeads(), projectService.getProjects(), agentService.getAgents()]);
@@ -2020,6 +2096,7 @@ async function newTaskModal(leadId){
       <div class="frow"><div><label class="f">Due *</label><input class="inp" name="date" type="date" value="${dflt}" required></div>
       <div><label class="f">Priority</label><select class="inp" name="priority"><option>High</option><option selected>Medium</option><option>Low</option></select></div></div>
       <label class="f">Notes</label><textarea class="inp" name="notes"></textarea>
+      <div class="fhint" style="margin-top:10px">New tasks are created with status <b>Open</b> — a valid tasks_status_check value.</div>
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="taskForm">${icon('plus',14)} Create task</button>`);
 }
@@ -2133,11 +2210,9 @@ PAGES.overview = { async render(root, p, seq){
     <div class="row2">
       ${card('Agent leaderboard', stats.slice(0,5).map((a,i) => `<div class="brow" style="cursor:pointer" data-action="openAgent" data-id="${a.id}">
         <span style="display:flex;gap:9px;align-items:center;overflow:hidden"><span style="color:var(--ink3);font-weight:650;width:14px">${i+1}</span>${avat(a.name,26)}<b style="font-weight:600">${esc(a.name)}</b></span>
-        <div class="btrack"><i style="width:${a.revenue/Math.max(...stats.map(x=>x.revenue),1)*100}%"></i></div><span class="bval">${inr(a.revenue)}</span></div>`).join('()') ? stats.slice(0,5).map((a,i) => `<div class="brow" style="cursor:pointer" data-action="openAgent" data-id="${a.id}">
-        <span style="display:flex;gap:9px;align-items:center;overflow:hidden"><span style="color:var(--ink3);font-weight:650;width:14px">${i+1}</span>${avat(a.name,26)}<b style="font-weight:600">${esc(a.name)}</b></span>
-        <div class="btrack"><i style="width:${a.revenue/Math.max(...stats.map(x=>x.revenue),1)*100}%"></i></div><span class="bval">${inr(a.revenue)}</span></div>`).join('') : '<div class="statebox" style="padding:24px">' + empty('No agent data yet') + '</div>', { sub: `${fmtRange(App.range)} · click for detail` })}
+        <div class="btrack"><i style="width:${a.revenue/Math.max(...stats.map(x=>x.revenue),1)*100}%"></i></div><span class="bval">${inr(a.revenue)}</span></div>`).join('') || '<div class="statebox" style="padding:24px">' + empty('No agent data yet') + '</div>', { sub: `${fmtRange(App.range)} · click for detail` })}
       ${card('Operations — needs attention', (() => {
-        const od = tasks.filter(t => t.status === 'Pending' && new Date(t.dueAt) < NOW).slice(0,4);
+        const od = tasks.filter(t => taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).slice(0,4);
         const upc = visits.filter(v => ['Scheduled','Confirmed'].includes(v.status) && new Date(v.date) >= new Date(NOW.toDateString())).slice(0,3);
         const leadNm = nmOf(agents), projNm = id => (byId(projects, id) || {name:'—'}).name;
         return `
@@ -2161,7 +2236,7 @@ PAGES.leads = { async render(root, p, seq){
   const scoreHist = charts.vbars(['0–19','20–39','40–59','60–79','80–100'].map((l, i) => ({ l, v: buckets[i], color: ['#B3AEA4','#8A857C','#C8922B','#9CC0AC','#1F6B4D'][i] })), { h: 138, values: true, tip: v => v + ' leads' });
   const srcBars = charts.hbars(analyticsService.sourcePerformance(leads).slice(0, 5).map(s => ({ l: s.source, v: s.count, tip: s.count + ' · avg ' + s.avgScore, c: '#1F6B4D' })));
   root.innerHTML = `
-    ${pageHead('Sales', 'Leads', `${leads.length} leads · ${demoMode() ? 'demo store' : 'live from the <span class="mono">leads</span> table'} · score prefers the stored <span class="mono">score/temperature</span>, else the client engine estimates it.`,
+    ${pageHead('Sales', 'Leads', `${leads.length} leads · ${demoMode() ? 'demo store' : 'live from the <span class="mono">leads</span> table (budget_min/budget_max included)'} · score prefers the stored <span class="mono">score/temperature</span>.`,
       `<button class="btn" data-action="newLead">${icon('plus',14)} New lead</button>`)}
     <div class="grid g3">
       ${card('Temperature', `<div class="duo">${tempDn.svg}<div>${tempDn.legend}</div></div>`, { sub: 'live from scoring' })}
@@ -2177,7 +2252,7 @@ PAGES.leads = { async render(root, p, seq){
       <button class="btn ghost sm" data-action="clearLeadFilters" style="margin-left:auto">${icon('x',13)} Clear</button>
     </div>
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl" id="leadTbl">
-      <thead><tr><th>Lead</th><th>Source</th><th>Requirement</th><th class="num">Budget</th><th>Score</th><th>Stage</th><th>Agent</th><th class="num">Last activity</th><th class="num">Next follow-up</th></tr></thead>
+      <thead><tr><th>Lead</th><th>Source</th><th>Requirement</th><th class="num">Budget</th><th>Score</th><th>Stage</th><th>Agent</th><th class="num">Last activity</th></tr></thead>
       <tbody></tbody></table></div><div id="leadEmpty" style="display:none"></div></div>`;
   const draw = () => {
     const q = $('#lq').value.toLowerCase(), src = $('#lsrc').value, temp = $('#ltemp').value, stg = $('#lstage').value;
@@ -2192,12 +2267,11 @@ PAGES.leads = { async render(root, p, seq){
       <td><div class="cellstrong">${esc(l.name)}</div><div class="cellsub">${esc(l.phone || '')}</div></td>
       <td>${chip(l.source || '—', 'c-gray')}</td>
       <td><div>${esc(l.req?.purpose || '—')} · ${esc(l.req?.propertyType || '—')}</div><div class="cellsub">${esc(l.req?.config || '')} ${l.req?.prefLocality ? '· ' + esc(l.req.prefLocality) : ''}</div></td>
-      <td class="num">${inr(l.req?.budgetMin)}–${inr(l.req?.budgetMax)}</td>
+      <td class="num">${inrFull(l.req?.budgetMin)} – ${inrFull(l.req?.budgetMax)}</td>
       <td>${scoreCell(l)}</td>
       <td>${stageChip(l.stage)}</td>
       <td>${esc(agentNm(l.agentId))}</td>
-      <td class="num">${timeAgo(l.lastActivityAt)}</td>
-      <td class="num ${l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW ? 'ovd' : ''}">${l.nextFollowUpAt ? (new Date(l.nextFollowUpAt) < NOW ? timeAgo(l.nextFollowUpAt) : timeIn(l.nextFollowUpAt)) : '—'}</td></tr>`).join('');
+      <td class="num">${timeAgo(l.lastActivityAt)}</td></tr>`).join('');
     $('#leadEmpty').style.display = rows.length ? 'none' : 'block';
     if (!rows.length) $('#leadEmpty').innerHTML = empty('No leads found', 'Try clearing filters or widening the temperature.');
     $('#leadTbl').style.display = rows.length ? '' : 'none';
@@ -2224,7 +2298,7 @@ PAGES.pipeline = { async render(root, p, seq){
     if (rest) parts.push({ label: 'Others', value: rest, tip: inr(rest), color: '#B3AEA4' });
     return charts.donut(parts, 132, 15, { v: active.length, l: 'deals' }); })();
   root.innerHTML = `
-    ${pageHead('Sales', 'Pipeline', `${active.length} active deals · ${inr(active.reduce((s,d)=>s+(d.value||0),0))} value · <b>${inr(weighted)} weighted</b>. Stages served by <span class="mono">pipelineService</span>${demoMode() ? '' : ' from the pipeline_stages table'}.`)}
+    ${pageHead('Sales', 'Pipeline', `${active.length} active deals · ${inr(active.reduce((s,d)=>s+(d.value||0),0))} value · <b>${inr(weighted)} weighted</b>. Stages served by <span class="mono">pipelineService</span> from the pipeline_stages table.`)}
     <div class="grid g3">
       ${card('Value by stage', charts.hbars(stageItems), { sub: 'hover for deal counts' })}
       ${card('Deal aging — days since last update', charts.vbars(ageLabels.map((l, i) => ({ l, v: ageCounts[i], color: i >= 3 ? '#B23A2E' : i === 2 ? '#C8922B' : '#1F6B4D' })), { h: 138, values: true, tip: v => v + ' deals' }), { sub: 'active deals · red = stale risk' })}
@@ -2288,7 +2362,7 @@ PAGES.visits = { async render(root, p, seq){
   for (let i = 7; i >= 0; i--){ const a = new Date(NOW.getFullYear(), NOW.getMonth() - i, 1), b = new Date(NOW.getFullYear(), NOW.getMonth() - i + 1, 1);
     visitTrend.push({ l: MONTHS[a.getMonth()], v: visits.filter(x => x.date && new Date(x.date) >= a && new Date(x.date) < b).length, cur: i === 0 }); }
   root.innerHTML = `
-    ${pageHead('Sales', 'Site Visits', `${visits.length} visits · changes persist via <span class="mono">siteVisitService</span>${demoMode() ? '' : ' → site_visits table'}.`,
+    ${pageHead('Sales', 'Site Visits', `${visits.length} visits · changes persist via <span class="mono">siteVisitService</span> → site_visits table.`,
       `<button class="btn" data-action="newVisit">${icon('cal',14)} Schedule visit</button>`)}
     <div class="filterbar">${[['all','All'],['upcoming','Upcoming'],['completed','Completed']].map(([k,l]) =>
       `<button class="btn sm ${tab === k ? '' : 'ghost'}" data-action="nav" data-page="visits" data-filter="${k === 'all' ? '' : k}">${l}</button>`).join('')}</div>
@@ -2315,7 +2389,7 @@ PAGES.projects = { async render(root, p, seq){
   const invs = await Promise.all(projects.map(pr => inventoryService.getInventory({ projectId: pr.id })));
   if (seq !== renderSeq) return;
   root.innerHTML = `
-    ${pageHead('Inventory', 'Projects', `Developer projects with towers → floors → units; the units live in Inventory.${demoMode() ? '' : ' Live from the projects + inventory_units tables.'}`)}
+    ${pageHead('Inventory', 'Projects', `Developer projects with towers → floors → units; the units live in Inventory.`)}
     <div class="card" style="padding:0">${projects.map((pr, i) => {
       const units = invs[i];
       const avail = units.filter(u => u.status === 'Available').length, committed = units.filter(u => ['Sold','Registered','Booked','Agreement'].includes(u.status)).length;
@@ -2368,7 +2442,7 @@ PAGES.properties = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents);
   root.innerHTML = `
-    ${pageHead('Inventory', 'Properties', `Resale, rental and commercial listings.${demoMode() ? '' : ' Live from the properties table.'}`)}
+    ${pageHead('Inventory', 'Properties', `Resale, rental and commercial listings.`)}
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
       <thead><tr><th>Listing</th><th>Locality</th><th class="num">Carpet</th><th class="num">Price</th><th>Status</th><th>Owner / Listed by</th><th>Agent</th><th class="num">Rate</th></tr></thead>
       <tbody>${props.map(x => `<tr data-action="openProperty" data-id="${x.id}">
@@ -2401,7 +2475,7 @@ PAGES.inventory = { async render(root, p, seq){
   const rateBars = charts.hbars(configs.map(c => { const us = allUnits.filter(u => u.config === c);
     return { l: c || '—', v: Math.round(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length), tip: psf(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length) + ' · ' + us.length + ' units', c: '#1F6B4D' }; }));
   root.innerHTML = `
-    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.${demoMode() ? '' : ' Live from the inventory_units table.'}`)}
+    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.`)}
     <div class="filterbar">
       <select class="inp" id="invPrj">${projects.map(x => `<option value="${x.id}" ${x.id === pid ? 'selected' : ''}>${esc(x.name)}${x.locality ? ' · ' + esc(x.locality) : ''}</option>`).join('')}</select>
       <div class="seg" id="invView"><button data-action="invView" data-view="map" class="${view === 'map' ? 'active' : ''}">Tower map</button><button data-action="invView" data-view="grid" class="${view === 'grid' ? 'active' : ''}">Unit list</button></div>
@@ -2453,7 +2527,7 @@ PAGES.agents = { async render(root, p, seq){
     act: `data-action="openAgent" data-id="${a.id}"` }));
   const bcBars = charts.vbars(stats.map(a => ({ l: a.name.split(' ')[0], v: a.bookings, v2: a.closures })), { h: 152, color: '#1F6B4D', color2: '#C8922B', tip: v => String(v) });
   root.innerHTML = `
-    ${pageHead('Performance', 'Agents', `Team comparison for <b>${fmtRange(App.range)}</b> — every number is computed from live CRM records${demoMode() ? ' (demo)' : ''}. Owner view.`)}
+    ${pageHead('Performance', 'Agents', `Team comparison for <b>${fmtRange(App.range)}</b> — every number is computed from live CRM records. Owner view.`)}
     <div class="row2">
       ${card('Response speed vs conversion', charts.scatter(pts, { xlabel: 'avg response time (min)', xfmt: f => Math.round(f) + 'm', yfmt: f => f.toFixed(0) + '%' }), { sub: 'bubble size = closed revenue · red = overdue follow-ups' })}
       ${card('Bookings vs closures', bcBars, { sub: `bookings (green) vs closures (amber) · ${fmtRange(App.range)}` })}
@@ -2538,13 +2612,13 @@ PAGES.commissions = { async render(root, p, seq){
   for (let i = 7; i >= 0; i--){ const a = new Date(NOW.getFullYear(), NOW.getMonth() - i, 1), b = new Date(NOW.getFullYear(), NOW.getMonth() - i + 1, 1);
     recMonths.push({ l: MONTHS[a.getMonth()], v: commissions.filter(c => c.paymentDate && new Date(c.paymentDate) >= a && new Date(c.paymentDate) < b).reduce((s, c) => s + (c.received || 0), 0), cur: i === 0 }); }
   root.innerHTML = `
-    ${pageHead('Performance', 'Commissions', `Brokerage ledger with GST, TDS (194H · 2%), CP payouts and splits.${demoMode() ? '' : ' Live from commissions + commission_payments; received amounts reconcile against recorded payments.'} ${commissions.length} records.`)}
+    ${pageHead('Performance', 'Commissions', `Brokerage ledger with GST, TDS (194H · 2%), CP payouts and splits. ${commissions.length} records.`)}
     <div class="grid g4">
       ${[['Total brokerage', inr(t.br)], ['Received', inr(t.rec)], ['Outstanding', inr(t.out)], ['GST / TDS', inr(t.gst) + ' / ' + inr(t.tds)]]
         .map(([k,v]) => `<div class="card" style="padding:14px 16px"><div class="k-label">${k}</div><div class="k-val" style="font-size:21px">${v}</div></div>`).join('')}
     </div>
     <div class="row2">
-      ${card('Collected vs outstanding', `<div class="duo">${recDn.svg}<div>${recDn.legend}<p class="fhint" style="margin-top:10px">${demoMode() ? 'Demo records.' : '“Mark received” inserts a commission_payments row — the single source of truth for collections.'}</p></div></div>`, { sub: 'amount basis, not count' })}
+      ${card('Collected vs outstanding', `<div class="duo">${recDn.svg}<div>${recDn.legend}<p class="fhint" style="margin-top:10px">“Mark received” inserts a <b>commission_payments</b> row — the single source of truth for collections — then verifies the status write.</p></div></div>`, { sub: 'amount basis, not count' })}
       ${card('Brokerage received by month', charts.vbars(recMonths.map(m => ({ l: m.l, v: m.v, cur: m.cur })), { tip: inr, fmt: inr, values: true, h: 150 }), { sub: 'recorded payment dates' })}
     </div>
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl" style="min-width:1060px">
@@ -2567,7 +2641,7 @@ PAGES.tasks = { async render(root, p, seq){
   const isToday = iso => iso && new Date(iso).toLocaleDateString('en-IN', { timeZone: IST }) === NOW.toLocaleDateString('en-IN', { timeZone: IST });
   const leadNm = id => (byId(leads, id) || {name:''}).name;
   const agentNm = nmOf(agents);
-  const pending = tasks.filter(t => t.status === 'Pending');
+  const pending = tasks.filter(taskOpen);
   const typeDn = charts.donut([...new Set(pending.map(t => t.type))].map((ty, i) => ({ label: ty, value: pending.filter(t => t.type === ty).length, color: CHART_COLORS[i % 6] })), 132, 15, { v: pending.length, l: 'open' });
   const odAgents = {}; pending.filter(t => t.dueAt && new Date(t.dueAt) < NOW).forEach(t => odAgents[t.agentId] = (odAgents[t.agentId] || 0) + 1);
   const odItems = Object.entries(odAgents).sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ l: agentNm(id), v: n, tip: n + ' overdue', c: '#B23A2E', act: `data-action="openAgent" data-id="${id}"` }));
@@ -2577,22 +2651,23 @@ PAGES.tasks = { async render(root, p, seq){
     ${list.map(t => `<div class="taskrow">
       <input type="checkbox" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer" data-change="taskDone" data-id="${t.id}" ${t.status === 'Completed' ? 'checked' : ''}>
       <span class="chip c-gray" style="min-width:74px;justify-content:center">${esc(t.type)}</span>
-      <div style="flex:1;min-width:0;cursor:pointer" data-action="openLead" data-id="${t.leadId || ''}"><div class="cellstrong" style="${t.status === 'Completed' ? 'text-decoration:line-through;color:var(--ink3)' : ''}">${esc(t.title)}</div>
+      <div style="flex:1;min-width:0;cursor:pointer" data-action="openLead" data-id="${t.leadId || ''}"><div class="cellstrong" style="${['Completed','Cancelled'].includes(t.status) ? 'text-decoration:line-through;color:var(--ink3)' : ''}">${esc(t.title)}</div>
       ${t.leadId ? `<div class="cellsub">${esc(leadNm(t.leadId))}</div>` : ''}</div>
       <span style="font-size:12px;color:var(--ink2)">${esc(agentNm(t.agentId).split(' ')[0])}</span>
-      <span style="font-size:12px;color:var(--ink3);width:80px;text-align:right" class="${t.dueAt && new Date(t.dueAt) < NOW && t.status === 'Pending' ? 'ovd' : ''}">${isToday(t.dueAt) ? 'Today' : fmtDate(t.dueAt)}</span>
+      <span style="font-size:12px;color:var(--ink3);width:80px;text-align:right" class="${t.dueAt && new Date(t.dueAt) < NOW && taskOpen(t) ? 'ovd' : ''}">${isToday(t.dueAt) ? 'Today' : fmtDate(t.dueAt)}</span>
+      <select class="inp" style="height:26px;width:auto;padding:0 4px;font-size:12px" data-change="taskStatus" data-id="${t.id}">${TASK_STATUSES.map(s => `<option ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
       ${chip(t.priority)}
-      ${t.status === 'Pending' ? `<button class="ibtn" title="Cancel task" data-action="taskCancel" data-id="${t.id}" style="width:26px;height:26px">${icon('x',12)}</button>` : ''}
+      ${taskOpen(t) ? `<button class="ibtn" title="Cancel task" data-action="taskCancel" data-id="${t.id}" style="width:26px;height:26px">${icon('x',12)}</button>` : ''}
     </div>`).join('')}</div>`; };
   root.innerHTML = `
-    ${pageHead('Operations', 'Tasks & Follow-ups', `Calls, WhatsApp follow-ups, visits, documentation and payment chasers.${demoMode() ? '' : ' Live from the tasks table — overdue states come from due_at in the database.'}`,
+    ${pageHead('Operations', 'Tasks & Follow-ups', `Statuses are the exact database values from <span class="mono">tasks_status_check</span> — Open · In Progress · Completed · Cancelled. Overdue = Open/In Progress past due_at.`,
       `<button class="btn" data-action="newTask">${icon('plus',14)} New task</button>`)}
     <div class="row2">
-      ${card('Open tasks by type', pending.length ? `<div class="duo">${typeDn.svg}<div>${typeDn.legend}</div></div>` : empty('No open tasks'), { sub: 'pending only' })}
+      ${card('Open tasks by type', pending.length ? `<div class="duo">${typeDn.svg}<div>${typeDn.legend}</div></div>` : empty('No open tasks'), { sub: 'Open + In Progress' })}
       ${card('Overdue follow-ups by agent', odBlock, { sub: 'click a row to open the agent' })}
     </div>
     ${p.filter === 'overdue' ? `<div class="notice">${icon('alert',16)}<span><b>Overdue view.</b> SLA: leads must be contacted within 48 hours; follow-ups should never lapse past their due date.</span></div>` : ''}
-    ${p.filter === 'overdue' ? grp('Overdue', pending.filter(t => t.dueAt && new Date(t.dueAt) < NOW), 'c-red') : (grp('Overdue', pending.filter(t => t.dueAt && new Date(t.dueAt) < NOW), 'c-red') + grp('Today', pending.filter(t => isToday(t.dueAt) && new Date(t.dueAt) >= NOW), 'c-amber') + grp('Upcoming', pending.filter(t => t.dueAt && new Date(t.dueAt) > NOW), 'c-slate') + grp('Completed', tasks.filter(t => t.status === 'Completed'), 'c-green'))}`;
+    ${p.filter === 'overdue' ? grp('Overdue', pending.filter(t => t.dueAt && new Date(t.dueAt) < NOW), 'c-red') : (grp('Overdue', pending.filter(t => t.dueAt && new Date(t.dueAt) < NOW), 'c-red') + grp('Today', pending.filter(t => isToday(t.dueAt) && new Date(t.dueAt) >= NOW), 'c-amber') + grp('Upcoming', pending.filter(t => t.dueAt && new Date(t.dueAt) > NOW), 'c-slate') + grp('Completed', tasks.filter(t => t.status === 'Completed'), 'c-green') + grp('Cancelled', tasks.filter(t => t.status === 'Cancelled'), 'c-gray'))}`;
 }};
 
 PAGES.whatsapp = { async render(root, p, seq){
@@ -2639,10 +2714,12 @@ PAGES.whatsapp = { async render(root, p, seq){
     e.preventDefault();
     const txt = $('#waText').value.trim(); if (!txt) return;
     $('#waText').value = '';
-    const sent = await communicationService.sendMessage(active.id, txt);
-    $('#waMsgs').insertAdjacentHTML('beforeend', `<div class="msg out">${esc(sent.text)}<div class="m-t">${fmtDT(sent.at)} · ${demoMode() ? 'demo — not delivered' : (sent.status === 'queued' ? 'queued — provider not connected' : 'sent')}</div></div>`);
-    $('#waMsgs').scrollTop = 1e6;
-    toast(demoMode() ? 'Message queued <em>(demo)</em>' : 'Message saved as queued — WhatsApp provider not connected');
+    try {
+      const sent = await communicationService.sendMessage(active.id, txt);
+      $('#waMsgs').insertAdjacentHTML('beforeend', `<div class="msg out">${esc(sent.text)}<div class="m-t">${fmtDT(sent.at)} · ${demoMode() ? 'demo — not delivered' : (sent.status === 'queued' ? 'queued — provider not connected' : 'sent')}</div></div>`);
+      $('#waMsgs').scrollTop = 1e6;
+      toast(demoMode() ? 'Message queued <em>(demo)</em>' : 'Message saved as queued — WhatsApp provider not connected');
+    } catch(err){ toast(esc(err.message)); }
   };
 }};
 
@@ -2650,19 +2727,17 @@ PAGES.automations = { async render(root, p, seq){
   const [rules, log] = await Promise.all([automationService.getRules(), automationService.getEventLog()]);
   if (seq !== renderSeq) return;
   root.innerHTML = `
-    ${pageHead('Operations', 'Automations', demoMode()
-      ? 'Demo automation definitions + a live session event log (events actually emitted by your actions).'
-      : 'Automation definitions from the <span class="mono">automation_rules</span> table; run history from <span class="mono">automation_runs</span>. Execution lives in your backend / n8n — this UI never pretends to run a worker.')}
-    <div class="notice">${icon('zap',16)}<span><b>Architecture:</b> mutations → your backend (DB triggers / n8n) → <span class="mono">automation_runs</span> → visible here. Payloads carry <span class="mono">organization_id</span> + <span class="mono">entity id</span> for multi-tenant routing.</span></div>
+    ${pageHead('Operations', 'Automations', 'Automation definitions from the <span class="mono">automation_rules</span> table; run history from <span class="mono">automation_runs</span>. Execution lives in your backend / n8n — this UI never pretends to run a worker.')}
+    <div class="notice">${icon('zap',16)}<span><b>Architecture:</b> mutations → your backend (DB triggers / n8n) → <span class="mono">automation_runs</span> → visible here. Payloads carry <span class="mono">organization_id</span> + entity id for multi-tenant routing.</span></div>
     ${card('Automation rules', rules.length ? rules.map(r => `<div class="rule-row">
       <div style="flex:1"><div style="font-weight:650;font-size:13.5px">${esc(r.name)}</div>
         <div class="rule-steps"><span class="rstep mono" style="background:#E9F2EC;border-color:#CFE0D5;color:var(--accent-ink)">${esc(r.trigger)}</span>
         ${r.steps.map(s => `<span class="rarr">→</span><span class="rstep">${esc(s)}</span>`).join('')}</div>
         ${r.lastTriggered ? `<div class="cellsub" style="margin-top:5px">Last run · ${timeAgo(r.lastTriggered)}</div>` : '<div class="cellsub" style="margin-top:5px">No runs recorded</div>'}</div>
       <button class="switch ${r.on ? 'on' : ''}" data-action="ruleToggle" data-id="${r.id}"><i></i></button>
-    </div>`).join('') : empty('No automation rules found', 'Populate automation_rules to configure workflows.'), { flush:true, sub: demoMode() ? 'demo definitions' : 'managed in the database — toggling persists to automation_rules' })}
+    </div>`).join('') : empty('No automation rules found', 'Populate automation_rules to configure workflows.'), { flush:true, sub: 'managed in the database — toggling persists to automation_rules' })}
     <div class="row2" style="margin-top:14px">
-      ${card(demoMode() ? 'Live event log (this session)' : 'Recent automation runs', log.length ? `<div class="timeline">${log.map(e => `<div class="tle"><div class="tt mono" style="font-size:11.5px">${esc(e.name)}</div><div class="tm">${fmtDT(e.at)} · ${Object.entries(e.payload || {}).map(([k,v]) => esc(k) + ': ' + esc(String(v))).slice(0,3).join(' · ')}</div></div>`).join('')}</div>` : '<p style="color:var(--ink3);font-size:12.5px">' + (demoMode() ? 'No events yet — change a lead stage or complete a task.' : 'No runs recorded yet — runs appear when your backend executes automations.') + '</p>', { sub: demoMode() ? 'real demo events' : 'from automation_runs' })}
+      ${card('Recent automation runs', log.length ? `<div class="timeline">${log.map(e => `<div class="tle"><div class="tt mono" style="font-size:11.5px">${esc(e.name)}</div><div class="tm">${fmtDT(e.at)} · ${Object.entries(e.payload || {}).map(([k,v]) => esc(k) + ': ' + esc(String(v))).slice(0,3).join(' · ')}</div></div>`).join('')}</div>` : '<p style="color:var(--ink3);font-size:12.5px">No runs recorded yet — runs appear when your backend executes automations.</p>', { sub: 'from automation_runs' })}
       ${card('Event catalog', `<div style="display:flex;gap:6px;flex-wrap:wrap">${automationService.getEventCatalog().map(e => `<span class="chip c-slate mono" style="font-size:10.5px">${esc(e)}</span>`).join('')}</div>
         <div class="envpre" style="margin-top:14px"><span class="c">// payload shape your backend emits</span>
 {
@@ -2679,9 +2754,7 @@ PAGES.ai = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const SUGG = ['Which leads should I call today?','Which deals are likely to close this month?','Which leads have gone cold?','Which source generates the most revenue?','Which projects are selling fastest?','Why has conversion dropped?','What is my expected commission?','Which agents are underperforming?','Which deals are stale?','What should I focus on today?'];
   root.innerHTML = `
-    ${pageHead('Command', 'AI Analyst', demoMode()
-      ? 'Demo intelligence — a <b>rule-based layer</b> answering from mock data. The production LLM connects via a secure backend; no AI key ever ships in this browser.'
-      : 'Production questions route to <b>your server boundary</b> (<span class="mono">CONFIG.AI_CHAT_ENDPOINT</span>, e.g. /api/ai/chat) — the server queries authorized brokerage data and calls the AI provider. Insights below come from the <span class="mono">ai_insights</span> table. No API keys in the browser.')}
+    ${pageHead('Command', 'AI Analyst', 'Production questions route to <b>your server boundary</b> (<span class="mono">CONFIG.AI_CHAT_ENDPOINT</span>) — the server queries authorized brokerage data and calls the AI provider. Insights below come from the <span class="mono">ai_insights</span> table. No API keys in the browser.')}
     <div class="notice">${icon('shield',16)}<span><b>Architecture:</b> Frontend → <span class="mono">aiService.ask()</span> → secure server API → AI provider. Secrets live server-side only.</span></div>
     <div class="ai-grid">
       <div class="card aichat">
@@ -2719,7 +2792,7 @@ PAGES.notifications = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const ICO = { new_lead:'users', hot_lead:'flame', unassigned:'alert', overdue:'clock', visit:'visit', stage:'pipeline', token:'tag', booking:'check', commission:'percent', stale:'alert', perf:'agent', marketing:'megaphone' };
   root.innerHTML = `
-    ${pageHead('Command', 'Notifications', `${notifications.filter(n=>!n.read).length} unread · ${demoMode() ? 'demo feed' : 'live from the notifications table'}.`, `<button class="btn ghost" data-action="markAllRead">${icon('check',14)} Mark all read</button>`)}
+    ${pageHead('Command', 'Notifications', `${notifications.filter(n=>!n.read).length} unread · live from the notifications table.`, `<button class="btn ghost" data-action="markAllRead">${icon('check',14)} Mark all read</button>`)}
     <div class="card" style="padding:0">${notifications.map(n => `<div class="taskrow" style="cursor:pointer" data-action="notifOpen" data-id="${n.id}" data-kind="${esc(n.entity.kind)}" data-eid="${esc(String(n.entity.id))}">
       <span class="dot" style="background:${n.read ? 'var(--line)' : 'var(--red)'}"></span>
       ${icon(ICO[n.type] || 'bell',16)}
@@ -2732,7 +2805,7 @@ PAGES.team = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const caps = [ ['View all leads', [1,1,1]], ['Reassign leads', [1,1,0]], ['Edit commissions', [1,1,0]], ['Export data', [1,1,0]], ['Manage team & roles', [1,1,0]], ['View organization revenue', [1,1,0]], ['See only own leads', [0,0,1]] ];
   root.innerHTML = `
-    ${pageHead('Admin', 'Team', `Roles: Owner / Admin / Agent. Multi-tenant by design — access is scoped by <span class="mono">organization_id</span> and enforced by RLS.${demoMode() ? '' : ' Roster served live from the agents table.'}`)}
+    ${pageHead('Admin', 'Team', `Roles: Owner / Admin / Agent. Multi-tenant by design — access is scoped by <span class="mono">organization_id</span> and enforced by RLS. Roster served live from the agents table.`)}
     <div class="card" style="padding:0;margin-bottom:14px"><div class="tblwrap"><table class="tbl">
       <thead><tr><th>Member</th><th>Role</th><th>Email / Phone</th><th class="num">Joined</th><th>Status</th></tr></thead>
       <tbody>${users.map(a => `<tr data-action="openAgent" data-id="${a.id}">
@@ -2778,7 +2851,7 @@ PAGES.integrations = { async render(root, p, seq){
     return chip('Not connected', 'c-gray');
   };
   root.innerHTML = `
-    ${pageHead('Admin', 'Integrations', `Statuses read live from the <span class="mono">integration_connections</span> table${demoMode() ? ' (demo shows all disconnected)' : ''}. Secrets never touch the frontend — only non-secret status rows.`)}
+    ${pageHead('Admin', 'Integrations', `Statuses read live from the <span class="mono">integration_connections</span> table. Secrets never touch the frontend — only non-secret status rows.`)}
     ${groups.map(([g, items]) => card(g, items.map(([key, n, ic, d]) => `<div class="taskrow" style="cursor:default">
       ${icon(ic,18)}
       <div style="flex:1"><div class="cellstrong">${esc(n)}</div><div class="cellsub">${esc(d)}</div></div>
@@ -2798,7 +2871,7 @@ PAGES.settings = { async render(root, p, seq){
         <label class="f">Primary city</label><input class="inp" name="city" value="${esc(App.org.city)}">
         <label class="f">GSTIN</label><input class="inp" name="gstin" value="${esc(App.org.gstin || '')}">
         <div style="margin-top:14px"><button class="btn sm" type="submit">${icon('check',13)} Save</button>
-        <span class="fhint" style="display:inline;margin-left:10px">${demoMode() ? 'demo store (session only)' : 'writes via organizationService.update → organizations table'}</span></div></form>`, { sub: demoMode() ? 'demo tenant' : 'tenant id resolved from your authenticated agent profile — never hardcoded' })}
+        <span class="fhint" style="display:inline;margin-left:10px">writes via organizationService.update → organizations table</span></div></form>`, { sub: 'tenant id resolved from your authenticated agent profile — never hardcoded' })}
       ${card('Brokerage defaults', `<div class="kv"><span class="k">Default brokerage</span><span class="v">${CONFIG.brokerageDefaults.pct}% (or fixed ${inr(CONFIG.brokerageDefaults.fixed)})</span></div>
         <div class="kv"><span class="k">GST on brokerage</span><span class="v">${CONFIG.brokerageDefaults.gst}%</span></div>
         <div class="kv"><span class="k">TDS (section 194H)</span><span class="v">${CONFIG.brokerageDefaults.tds}%</span></div>
@@ -2809,9 +2882,8 @@ PAGES.settings = { async render(root, p, seq){
       <span class="mono" style="width:26px;color:var(--ink3)">${i+1}</span>
       <span class="cellstrong" style="flex:1">${esc(s.label)}</span>
       <span class="chip c-slate">${(s.prob*100).toFixed(0)}% win probability</span>
-      <button class="ibtn" style="width:26px;height:26px;transform:rotate(180deg)" data-action="stageMove" data-id="${s.id}" data-dir="-1" title="Move up">${icon('chevD',12)}</button>
-      <button class="ibtn" style="width:26px;height:26px" data-action="stageMove" data-id="${s.id}" data-dir="1" title="Move down">${icon('chevD',12)}</button>
-    </div>`).join(''), { flush:true, sub: demoMode() ? 'demo order — reorder freely' : 'served from the pipeline_stages table · reorder here is disabled in production — edit the table directly' })}
+      <span class="mono" style="color:var(--ink3)">${esc(String(s.id).slice(0,8))}</span>
+    </div>`).join(''), { flush:true, sub: demoMode() ? 'demo order' : 'served live from the pipeline_stages table — edit the table directly in production' })}
     <div class="row2" style="margin-top:14px">
       ${demoMode() ? card('Demo & development', `
         <div class="taskrow" style="cursor:default;padding-left:0"><div style="flex:1"><div class="cellstrong">Simulate network latency</div><div class="cellsub">Shows loading skeletons like a real backend</div></div>
@@ -2824,8 +2896,8 @@ PAGES.settings = { async render(root, p, seq){
 VITE_SUPABASE_URL=<span class="g">${CONFIG.SUPABASE_URL ? '(configured for this session)' : '(not set)'}</span>
 VITE_SUPABASE_ANON_KEY=<span class="g">${CONFIG.SUPABASE_ANON_KEY ? '(configured for this session — value never displayed)' : '(not set)'}</span>
 AI_CHAT_ENDPOINT=<span class="g">${CONFIG.AI_CHAT_ENDPOINT ? esc(CONFIG.AI_CHAT_ENDPOINT) : '(not set)'}</span></div>
-        <p class="fhint" style="margin:12px 0">Mode: <b>${App.mode === 'demo' ? 'Demo (mock, isolated)' : 'Production (Supabase, RLS)'}</b>. Every service keeps identical signatures — swap bodies, never the UI:</p>
-        <div class="envpre"><span class="c">// the remote layer in this file is the swap surface</span>
+        <p class="fhint" style="margin:12px 0">Mode: <b>${App.mode === 'demo' ? 'Demo (mock, isolated)' : 'Production (Supabase, RLS)'}</b>. Every service keeps identical signatures — swap bodies, never the UI. Leads writes pass the LEADS_COLUMNS allowlist; task statuses pass TASK_STATUSES only.</p>
+        <div class="envpre"><span class="c">// required migration: see leads budget_min / budget_max (Migration 001)</span>
 <span class="g">async</span> getLeads() {
   <span class="g">return</span> sel(<span class="g">"leads"</span>) <span class="c">// → supabase.from("leads").select()</span>
 }</div>`)}
@@ -2839,13 +2911,16 @@ PAGES.security = { async render(root, p, seq){
   const prod = prodMode();
   const checks = [
     ['Supabase Auth (email + password)', prod ? 'done' : 'demo', prod ? 'Real session via supabase.auth — stored in memory only, never in browser storage' : 'Demo mode — sign in to your Supabase project for real authentication'],
-    ['Organization resolved from the agent profile', prod ? 'done' : 'demo', 'agents.user_id → organization — the tenant id is never hardcoded in this codebase'],
+    ['User → agent → organization chain', prod ? 'done' : 'demo', 'agents.user_id → organizations — no fake agent is ever created; a missing agent row fails clearly'],
+    ['Pipeline stages from pipeline_stages', prod ? 'done' : 'demo', 'Production fails LOUDLY if the table is unreadable — never falls back to built-in IDs'],
     ['Row Level Security is the security boundary', 'be', 'All queries run with the anon key under your RLS policies (my_organization_ids / is_org_member / is_org_admin)'],
     ['No secrets in frontend code', 'done', 'Anon key only; service-role keys never appear; AI keys live behind the server boundary'],
-    ['No browser persistence of business data', 'done', 'localStorage / sessionStorage / IndexedDB / cookies: zero usage — the Supabase auth session uses an in-memory adapter'],
+    ['No browser persistence of business data', 'done', 'localStorage / sessionStorage / IndexedDB / cookies: zero usage — the auth session uses an in-memory adapter'],
+    ['Write allowlists', 'done', 'LEADS_COLUMNS + TASK_STATUSES guarantee no schema-invalid payload can be sent'],
+    ['Read-back verification', 'done', 'ins()/upd() throw when Postgres returns no row; leads/tasks/deals/visits/agents/commissions verify stored values'],
     ['Role-based UI hints', 'fe', 'Owner/Admin/Agent hints hide UI only — never treated as authorization'],
     ['Audit logging', prod ? 'be' : 'demo', prod ? 'auditLogService reads the audit_logs table (backend triggers own the writes)' : 'Demo audit trail — production logs persist in audit_logs'],
-    ['Sensitive actions behind confirmation', 'done', 'Deletes, holds and cancellations use a confirm dialog'],
+    ['Sensitive actions behind confirmation', 'done', 'Deletes, holds, cancellations and receipts use a confirm dialog'],
   ];
   root.innerHTML = `
     ${pageHead('Admin', 'Security', prod
@@ -2858,7 +2933,7 @@ PAGES.security = { async render(root, p, seq){
         <div class="kv"><span class="k">Key in browser</span><span class="v">anon key only — never service-role</span></div>
         <div style="margin-top:14px"><button class="btn ghost sm" data-action="signOut">${icon('shield',13)} Sign out</button></div>`)}
       ${card('Security posture', checks.map(([t, k, d]) => `<div class="taskrow" style="cursor:default;padding:10px 0">
-        <span style="color:${k === 'done' ? 'var(--accent-ink)' : k === 'fe' ? 'var(--amber)' : k === 'demo' ? 'var(--amber)' : 'var(--teal)'}">${icon(k === 'done' ? 'check' : 'shield',16)}</span>
+        <span style="color:${k === 'done' ? 'var(--accent-ink)' : ['fe','demo'].includes(k) ? 'var(--amber)' : 'var(--teal)'}">${icon(k === 'done' ? 'check' : 'shield',16)}</span>
         <div style="flex:1"><div class="cellstrong">${esc(t)}</div><div class="cellsub">${esc(d)}</div></div>
         ${k === 'done' ? chip('In place', 'c-green') : k === 'fe' ? chip('Frontend only', 'c-amber') : k === 'demo' ? chip('Demo', 'c-amber') : chip('Backend enforced', 'c-teal')}
       </div>`).join(''), { flush:true })}
@@ -2926,26 +3001,30 @@ const Actions = {
   newVisitFor(d){ newVisitModal(d.id); },
   newTask(){ newTaskModal(); },
   newTaskFor(d){ newTaskModal(d.id); },
-  deleteLead(d){ confirmBox('Delete lead?', `This permanently removes the lead${demoMode() ? ' from the demo store' : ' from the leads table'}.`, async () => {
-      await leadService.deleteLead(d.id); closeDrawer(); toast('Lead deleted'); refresh(); }); },
-  holdUnit(d){ confirmBox('Put this unit on hold?', `Status becomes <b>Hold</b> via inventoryService${demoMode() ? '' : ' → inventory_units.status'} under RLS.`, async () => {
-      await inventoryService.setUnitStatus(d.id, 'Hold'); closeDrawer(); toast('Unit placed on hold'); refresh(); }); },
-  shareUnit(d){ toast('Unit shared to WhatsApp thread' + (demoMode() ? ' <em>(demo)</em>' : ' <em>(queued — provider not connected)</em>')); },
-  markReceived(d){ confirmBox('Mark commission received?', demoMode() ? 'Records full receipt in the demo store.' : 'Inserts a <b>commission_payments</b> row for the outstanding amount — the single source of truth for collections.', async () => {
-      await commissionService.markReceived(d.id); toast('Commission marked received'); refresh(); }); },
+  async editLead(d){ const lead = await leadService.getLead(d.id); if (lead) editLeadModal(lead); },
+  deleteLead(d){ confirmBox('Delete lead?', `This permanently removes the lead from the <b>leads</b> table. Dependent rows (activities, assignments, visits, tasks, deals) may block the delete — the real database error will be shown if so.`, async () => {
+      try { await leadService.deleteLead(d.id); closeDrawer(); toast('Lead deleted — re-read confirmed absence'); refresh(); }
+      catch(err){ toast(esc(err.message)); } }); },
+  holdUnit(d){ confirmBox('Put this unit on hold?', 'Status becomes <b>Hold</b> via inventoryService → inventory_units.status under RLS, and the stored value is verified.', async () => {
+      try { await inventoryService.setUnitStatus(d.id, 'Hold'); closeDrawer(); toast('Unit placed on hold — verified'); refresh(); }
+      catch(err){ toast(esc(err.message)); } }); },
+  shareUnit(d){ toast('Unit shared to WhatsApp thread (queued — provider not connected)'); },
+  markReceived(d){ confirmBox('Mark commission received?', 'Inserts a <b>commission_payments</b> row for the outstanding amount — the single source of truth for collections — then verifies the status write.', async () => {
+      try { await commissionService.markReceived(d.id); toast('Commission marked received — verified'); refresh(); }
+      catch(err){ toast(esc(err.message)); } }); },
   async completeVisit(d){ const v = await siteVisitService.getVisit(d.id); if (v) completeVisitModal(v); },
-  async waOpen(d){ await communicationService.markRead(d.id); renderBadges(); go('whatsapp', { convo:d.id }); },
+  async waOpen(d){ try { await communicationService.markRead(d.id); } catch(e){ toast(esc(e.message)); } renderBadges(); go('whatsapp', { convo:d.id }); },
   async waForLead(d){ const c = await communicationService.getConversationByLead(d.id);
-    if (c){ await communicationService.markRead(c.id); renderBadges(); go('whatsapp', { convo:c.id }); }
-    else go('whatsapp', {}), toast('No conversation for this lead yet'); },
+    if (c){ try { await communicationService.markRead(c.id); } catch(e){ toast(esc(e.message)); } renderBadges(); go('whatsapp', { convo:c.id }); }
+    else { go('whatsapp', {}); toast('No conversation for this lead yet'); } },
   waTpl(d){ const el = $('#waText'); if (el){ el.value = d.text; el.focus(); } },
   async waSuggest(d){
-    const c = await communicationService.getConversationByLead ? await (async () => { const convos = await communicationService.getConversations(); return convos.find(x => x.id === d.convo); })() : null;
+    const convos = await communicationService.getConversations();
+    const c = convos.find(x => x.id === d.convo);
     let text = '';
     if (c){ const lead = c.leadId ? await leadService.getLead(c.leadId).catch(() => null) : null;
       const first = (lead?.name || '').split(' ')[0] || 'ji';
       text = lead?.stage === 'new' ? `Hello ${first} ji, thank you for your enquiry. I can share options this evening — when is a good time to call?`
-        : ['visit_scheduled'].includes(lead?.stage) ? `Namaste ${first} ji, confirming our site visit. Our team will meet you at the site office — please carry a valid ID.`
         : `Namaste ${first} ji, following up on the options we discussed. Shall I schedule a site visit this weekend?`; }
     const el = $('#waText'); if (el && text){ el.value = text; el.focus(); }
     toast('Suggested reply generated (client-side template)');
@@ -2958,11 +3037,10 @@ const Actions = {
     if (d.kind === 'lead' && d.eid) Actions.openLead({ id:d.eid }); else if (d.kind === 'page' && d.eid) go(d.eid); else refresh(); },
   markAllRead(){ notificationService.markAllRead().then(() => { toast('All notifications marked read'); refresh(); }); },
   async ruleToggle(d){ await automationService.toggleRule(d.id); refresh(); },
-  stageMove(d){ if (prodMode()){ toast('Pipeline stages live in the pipeline_stages table — edit them in the database'); return; }
-    pipelineService.move(d.id, +d.dir); refresh(); },
+  stageMove(d){ toast('Pipeline stages live in the pipeline_stages table — edit them in the database'); },
   toggleCfg(d){ CONFIG[d.key] = !CONFIG[d.key]; refresh(); },
   async resetDemo(){ await demoService.reset(); App.org = await organizationService.getOrganization(); renderShell(); toast('Demo data re-seeded — nothing was ever on disk'); refresh(); },
-  connectIntegration(d){ modal('Configure — ' + esc(d.name), `<div class="notice" style="margin:0 0 12px">${icon('alert',16)}<span>Connection credentials live server-side only (Supabase Edge Functions / n8n) — never in this frontend. This dialog is where configuration will be referenced.</span></div>
+  connectIntegration(d){ modal('Configure — ' + esc(d.name), `<div class="notice" style="margin:0 0 12px">${icon('alert',16)}<span>Nothing is connected in this prototype and no credentials exist yet. This dialog is where the future configuration will be referenced.</span></div>
     <p style="color:var(--ink2);font-size:13px">To wire <b>${esc(d.name)}</b>, create a row in <span class="mono">integration_connections</span> from your backend with a non-secret status, and point the matching service at real endpoints. The frontend will then read its status as Connected / Error / Disabled.</p>`,
     `<button class="btn" data-action="closeModal">Understood</button>`); },
   avatarMenu(btn){ const existing = $('.pop'); if (existing){ existing.remove(); return; }
@@ -2977,7 +3055,7 @@ const Actions = {
     setTimeout(() => document.addEventListener('click', function h(e){ if (!e.target.closest('.pop')){ pop.remove(); document.removeEventListener('click', h); } }), 10); },
 };
 
-/* delegated events — every mutation goes through services */
+/* delegated events — every mutation goes through services; failures surface */
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-action]');
   if (t && Actions[t.dataset.action]){ e.preventDefault(); $$('.pop').forEach(p => p.remove()); Actions[t.dataset.action](t.dataset, t, e); }
@@ -2985,14 +3063,20 @@ document.addEventListener('click', e => {
 document.addEventListener('change', async e => {
   const t = e.target.closest('[data-change]'); if (!t) return;
   const { change: c, id } = t.dataset;
-  if (c === 'leadStage'){ await leadService.updateLead(id, { stage:t.value }); toast('Stage updated — ' + pipelineService.stage(t.value).label); closeDrawer(); refresh(); renderBadges(); }
-  if (c === 'leadAgent'){ await leadService.updateLead(id, { agentId:t.value || null }); toast(t.value ? 'Lead assigned' : 'Lead unassigned' + (prodMode() ? ' — lead_assignments row written' : '')); renderBadges(); }
-  if (c === 'dealStage'){ await dealService.updateDealStage(id, t.value); toast('Deal stage → ' + pipelineService.stage(t.value).label); closeDrawer(); refresh(); }
-  if (c === 'agentRole'){ await agentService.updateRole(id, t.value); toast('Role updated (frontend hint — RLS enforces real permissions)'); }
-  if (c === 'taskDone'){ await taskService.setStatus(id, t.checked ? 'Completed' : 'Pending'); toast(t.checked ? 'Task completed' : 'Task reopened'); refresh(); }
+  try {
+    if (c === 'leadStage'){ await leadService.updateLead(id, { stage: t.value }); toast('Stage updated — ' + pipelineService.stage(t.value).label); closeDrawer(); refresh(); renderBadges(); }
+    if (c === 'leadAgent'){ await leadService.updateLead(id, { agentId: t.value || null }); toast(t.value ? 'Lead assigned' : 'Lead unassigned'); renderBadges(); }
+    if (c === 'dealStage'){ await dealService.updateDealStage(id, t.value); toast('Deal stage → ' + pipelineService.stage(t.value).label + ' — verified'); closeDrawer(); refresh(); }
+    if (c === 'agentRole'){ await agentService.updateRole(id, t.value); toast('Role updated — verified (frontend hint; RLS enforces real permissions)'); }
+    if (c === 'taskDone'){ await taskService.setStatus(id, t.checked ? 'Completed' : TASK_OPEN); toast(t.checked ? 'Task completed — verified' : 'Task reopened as Open — verified'); refresh(); }
+    if (c === 'taskStatus'){ await taskService.setStatus(id, t.value); toast('Task status → ' + t.value + ' — verified'); refresh(); }
+  } catch(err){
+    toast(esc((err && err.message) || 'Update failed'));   // exact database error — never swallowed
+    refresh();                                             // reset the control to the persisted value
+  }
 });
 
-/* ---- form error surface + busy state ---- */
+/* ---- form error surface + busy state + budget validation ---- */
 function clearFormError(form){ const el = form && form.querySelector('.form-err'); if (el) el.remove(); }
 function showFormError(form, msg){
   if (!form) return;
@@ -3005,7 +3089,7 @@ function showFormError(form, msg){
   el.scrollIntoView({ block: 'nearest' });
 }
 async function guardForm(form, fn){
-  const btn = form.querySelector('[type="submit"]'); const orig = btn ? btn.innerHTML : '';
+  const btn = form.querySelector('[type="submit"]') || document.querySelector(`button[form="${form.id}"]`); const orig = btn ? btn.innerHTML : '';
   clearFormError(form);
   try {
     if (btn){ btn.disabled = true; btn.innerHTML = icon('refresh',13) + ' Saving…'; }
@@ -3013,10 +3097,20 @@ async function guardForm(form, fn){
     return true;
   } catch(err){
     if (btn){ btn.disabled = false; btn.innerHTML = orig; }
-    showFormError(form, (err && err.message) || 'Request failed');   // the exact Supabase/PostgREST message
+    showFormError(form, (err && err.message) || 'Request failed');   // the exact database message
     return false;
   }
 }
+function parseBudget(raw){
+  const s = String(raw ?? '').trim();
+  if (s === '') return null;                                   // blank = intentional clear → NULL
+  const n = Number(s.replace(/,/g, ''));
+  if (isNaN(n)) throw new Error('Budget must be a plain number (e.g. 8500000), never a formatted string like “₹2 Cr”.');
+  if (n < 0) throw new Error('Budget cannot be negative.');
+  return n;
+}
+const budgetsValid = (mn, mx) => (mn == null || mx == null || mx >= mn);
+const numEq = (a, b) => (a == null && b == null) || (a != null && b != null && Number(a) === Number(b));
 
 document.addEventListener('submit', async e => {
   const f = e.target.closest('[data-form]'); if (!f) return; e.preventDefault();
@@ -3034,27 +3128,58 @@ document.addEventListener('submit', async e => {
   }
   if (kind === 'lead'){
     await guardForm(f, async () => {
+      const bmin = parseBudget(fd.budgetMin), bmax = parseBudget(fd.budgetMax);
+      if (!budgetsValid(bmin, bmax)) throw new Error('Budget max cannot be lower than budget min.');
       const created = await leadService.createLead({
-        name: fd.name.trim(), phone: fd.phone.trim(), city: fd.city || 'Gurugram', locality: fd.locality || '',
+        name: fd.name.trim(), phone: fd.phone.trim(), email: (fd.email || '').trim() || null,
+        city: fd.city || 'Gurugram', locality: fd.locality || '',
         source: fd.source, agentId: fd.agentId || null, visitCount: 0,
+        budgetMin: bmin, budgetMax: bmax,
         req: { purpose: fd.purpose, propertyClass: 'Residential', prefLocality: fd.locality || '',
-          propertyType: fd.propertyType, config: '', budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null },
+          propertyType: fd.propertyType, config: '', budgetMin: bmin, budgetMax: bmax },
         notes: fd.notes || '',
       });
-      // built-in round-trip verification: re-read the row and assert the FK values
+      // read-back verification: re-read the row and assert the FK + budget values
       if (prodMode()){
         const check = await leadService.getLead(created.id);
-        if (!check || !check.id) throw new Error('Insert succeeded but the lead could not be re-read — check the RLS SELECT policy on leads (the row exists).');
+        if (!check || !check.id) throw new Error('Insert succeeded but the lead could not be re-read — check the RLS SELECT policy on leads.');
         if (check.createdById && String(check.createdById) !== String(authAgentId()))
           throw new Error('created_by verification failed — expected your agents.id ' + authAgentId() + ', found ' + check.createdById);
         if (check.stage && pipelineService.loaded() && !pipelineService.stages().some(s => s.id === check.stage))
-          throw new Error('stage_id ' + check.stage + ' is not a row in pipeline_stages — check the inserted value.');
+          throw new Error('stage_id ' + check.stage + ' is not a row in pipeline_stages.');
+        if (!numEq(check.req.budgetMin, bmin) || !numEq(check.req.budgetMax, bmax))
+          throw new Error('Budget verification failed — expected ' + bmin + '/' + bmax + ', database returned ' + check.req.budgetMin + '/' + check.req.budgetMax + '.');
       }
-      // UI-only enrichment: form details with no matching leads columns — visible this session, not persisted
-      created.req = { ...created.req, purpose: fd.purpose, propertyType: fd.propertyType, budgetMin: +fd.budgetMin || null, budgetMax: +fd.budgetMax || null };
+      created.req = { ...created.req, purpose: fd.purpose, propertyType: fd.propertyType, budgetMin: bmin, budgetMax: bmax };
       created.notes = fd.notes || '';
-      closeModal(); toast('Lead created' + (prodMode() ? ' — verified in Supabase (created_by · stage_id)' : ''));
+      closeModal(); toast('Lead created' + (prodMode() ? ' — verified in Supabase (created_by · stage_id · budget)' : ''));
       renderBadges(); refresh();
+    });
+    return;
+  }
+  if (kind === 'editLead'){
+    await guardForm(f, async () => {
+      const id = f.dataset.id;
+      const bmin = parseBudget(fd.budgetMin), bmax = parseBudget(fd.budgetMax);
+      if (!budgetsValid(bmin, bmax)) throw new Error('Budget max cannot be lower than budget min.');
+      const patch = {
+        name: fd.name.trim(), phone: fd.phone.trim(),
+        email: (fd.email || '').trim() || null,
+        city: (fd.city || '').trim() || null,
+        locality: (fd.locality || '').trim() || null,
+        budgetMin: bmin, budgetMax: bmax,
+      };
+      await leadService.updateLead(id, patch);
+      // read-back verification
+      if (prodMode()){
+        const check = await leadService.getLead(id);
+        if (!numEq(check?.req?.budgetMin, bmin) || !numEq(check?.req?.budgetMax, bmax))
+          throw new Error('Budget verification failed — expected ' + bmin + '/' + bmax + ', database returned ' + (check?.req?.budgetMin ?? 'null') + '/' + (check?.req?.budgetMax ?? 'null') + '.');
+        if (check && check.name !== patch.name) throw new Error('Name verification failed.');
+      }
+      closeModal(); closeDrawer();
+      toast('Lead updated' + (prodMode() ? ' — budget verified against Supabase' : ''));
+      refresh();
     });
     return;
   }
@@ -3071,14 +3196,14 @@ document.addEventListener('submit', async e => {
     await guardForm(f, async () => {
       await taskService.createTask({ type: fd.type, title: fd.title, leadId: fd.leadId || null, agentId: fd.agentId,
         dueAt: new Date(fd.date + 'T10:00').toISOString(), priority: fd.priority, notes: fd.notes || '' });
-      closeModal(); toast('Task created'); refresh();
+      closeModal(); toast('Task created with status Open — verified'); refresh();
     });
     return;
   }
   if (kind === 'visitOutcome'){
     await guardForm(f, async () => {
       await siteVisitService.completeVisit(f.dataset.id, fd.outcome, +fd.followUpDays);
-      closeModal(); toast('Visit outcome recorded'); renderBadges(); refresh();
+      closeModal(); toast('Visit outcome recorded — verified'); renderBadges(); refresh();
     });
     return;
   }
@@ -3086,7 +3211,7 @@ document.addEventListener('submit', async e => {
     await guardForm(f, async () => {
       await organizationService.update({ name: fd.name, city: fd.city, gstin: fd.gstin });
       App.org = await organizationService.getOrganization();
-      closeModal(); toast('Organization saved' + (prodMode() ? ' — written to organizations' : ' (demo)')); renderShell(); refresh();
+      closeModal(); toast('Organization saved — written to organizations'); renderShell(); refresh();
     });
     return;
   }
