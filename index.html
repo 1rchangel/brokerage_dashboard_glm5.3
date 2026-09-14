@@ -1221,27 +1221,61 @@ const R = {
       }
       // resolve the entry stage from pipeline_stages (loaded at boot) — never a fallback string id
       let entryStage = null;
-      if (pipelineService.loaded()){
-        const stages = pipelineService.stages();
-        entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
-      }
-      const rows = await ins('leads', [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]);
-      // secondary activity log — only after the primary insert succeeded, never blocks it
-      const l = rows && rows[0];
-      if (l){ try { await ins('lead_activities', [{ lead_id: l.id, agent_id: authAgentId(), type: 'note', text: 'Lead created' }]); }
-        catch(e){ console.warn('lead_activities write not confirmed (check column names / SELECT policy):', e.message); } }
-      return rows;
-    },
-    async update(id, patch){
-      const row = leadPatchToRow(patch);
-      let rows;
-      if (Object.keys(row).length){ rows = await upd('leads', { id }, row); }   // primary mutation first
-      else { rows = await sel('leads', { eq: { id } }); }
-      if (patch.agentId !== undefined && patch.agentId){                        // secondary, non-blocking
-        try { await ins('lead_assignments', [{ lead_id: id, agent_id: patch.agentId, assigned_by: authAgentId() }]); }
-        catch(e){ console.warn('lead_assignments write not confirmed (check column names / SELECT policy):', e.message); }
-      }
-      return rows;
+if (pipelineService.loaded()){
+  const stages = pipelineService.stages();
+  entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
+}
+
+const rows = await ins(
+  'leads',
+  [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]
+);
+
+// newly created lead
+const l = rows && rows[0];
+
+// round-robin auto-assignment — ONLY for newly created leads
+// Do not run when an agent was manually selected.
+if (!data.agentId && l){
+  try {
+    const c = await client();
+    const rr = await c.rpc('assign_lead_round_robin', {
+      p_lead_id: l.id,
+      p_organization_id: authOrgId()
+    });
+
+    if (rr.error) {
+      console.warn(
+        'assign_lead_round_robin RPC error:',
+        rr.error.message
+      );
+    }
+  } catch(e) {
+    console.warn(
+      'assign_lead_round_robin RPC not confirmed:',
+      e.message
+    );
+  }
+}
+
+// secondary activity log — only after the primary insert succeeded, never blocks it
+if (l){
+  try {
+    await ins('lead_activities', [{
+      lead_id: l.id,
+      agent_id: authAgentId(),
+      type: 'note',
+      text: 'Lead created'
+    }]);
+  } catch(e){
+    console.warn(
+      'lead_activities write not confirmed (check column names / SELECT policy):',
+      e.message
+    );
+  }
+}
+
+return rows;
     },
     async remove(id){
       const c = await client();
@@ -3227,6 +3261,9 @@ document.addEventListener('keydown', e => {
 (async function boot(){
   await authService.init();
 })();
+</script>
+</body>
+</html>
 </script>
 </body>
 </html>
