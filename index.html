@@ -1106,15 +1106,46 @@ const fromDealRow = r => ({ id: r.id, leadId: r.lead_id, projectId: r.project_id
   createdAt: r.created_at || null, updatedAt: val(r, ['updated_at'], r.created_at),
   expectedClose: val(r, ['expected_close_at'], null), closedAt: r.closed_at || null,
   listingKind: val(r, ['listing_kind'], 'developer') });
-const fromUnitRow = r => ({ id: r.id, projectId: r.project_id, tower: val(r, ['tower'], '—'), floor: r.floor ?? 1,
-  totalFloors: val(r, ['total_floors'], r.floor ?? 1), unitNo: String(val(r, ['unit_number','unit_no'], '')),
-  config: val(r, ['configuration','config'], ''), bhk: r.bhk ?? 3,
-  carpet: val(r, ['carpet_area'], 0), builtUp: val(r, ['built_up_area'], 0), superBuiltUp: val(r, ['super_built_up_area'], 0),
-  facing: val(r, ['facing'], '—'), parking: r.parking ?? 1, furnishing: val(r, ['furnishing'], '—'),
-  possession: val(r, ['possession'], null), rate: val(r, ['rate_per_sqft','rate'], 0), price: r.price ?? 0,
-  plc: r.plc ?? 0, maintenance: r.maintenance ?? 0, otherCharges: val(r, ['other_charges'], 0),
-  status: val(r, ['status'], 'Available'), listedBy: val(r, ['listed_by'], ''), listingAgent: val(r, ['listing_agent_id'], null),
-  exclusive: !!r.exclusive, photos: arr1(val(r, ['photos'], 'unit')), floorPlan: val(r, ['floor_plan_url'], '#'), type: val(r, ['type'], '') });
+/* ---- inventory_units: VERIFIED columns (schema-confirmed) — hard write-allowlist.
+   UI-only (no inventory_units column): totalFloors, type — kept as display defaults, never sent on insert. ---- */
+const INVENTORY_COLUMNS = new Set(['organization_id','project_id','tower','floor','unit_number','configuration','bhk','carpet_area','built_up_area','super_built_up_area','facing','parking','furnishing','possession','rate_per_sqft','price','plc','maintenance','other_charges','status','listed_by','listing_agent_id','exclusive','photos','floor_plan_url']);
+const scrubUnitRow = (row, { keepNull = false } = {}) => Object.fromEntries(
+  Object.entries(row).filter(([k, v]) => INVENTORY_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
+const fromUnitRow = r => ({ id: r.id, projectId: r.project_id, tower: r.tower ?? '—', floor: r.floor ?? 1,
+  totalFloors: r.floor ?? 1,                     // no total_floors column — UI-only default
+  unitNo: String(r.unit_number ?? ''),
+  config: r.configuration ?? '', bhk: r.bhk ?? 3,
+  carpet: r.carpet_area ?? 0, builtUp: r.built_up_area ?? 0, superBuiltUp: r.super_built_up_area ?? 0,
+  facing: r.facing ?? '—', parking: r.parking ?? 1, furnishing: r.furnishing ?? '—',
+  possession: r.possession ?? null, rate: r.rate_per_sqft ?? 0, price: r.price ?? 0,
+  plc: r.plc ?? 0, maintenance: r.maintenance ?? 0, otherCharges: r.other_charges ?? 0,
+  status: r.status ?? 'Available', listedBy: r.listed_by ?? '', listingAgent: r.listing_agent_id ?? null,
+  exclusive: !!r.exclusive, photos: arr1(r.photos ?? 'unit'), floorPlan: r.floor_plan_url ?? '#', type: '' });
+const unitToRow = (u, orgId) => scrubUnitRow({
+  organization_id: orgId || undefined,           // runtime value from the authenticated profile — never hardcoded
+  project_id: u.projectId,                       // must be a real projects.id — never generated/faked
+  tower: u.tower || null,
+  floor: u.floor != null ? Number(u.floor) : null,
+  unit_number: u.unitNo != null ? String(u.unitNo) : null,
+  configuration: u.config || null,
+  bhk: u.bhk != null ? Number(u.bhk) : null,
+  carpet_area: u.carpet != null && u.carpet !== '' ? Number(u.carpet) : null,
+  built_up_area: u.builtUp != null && u.builtUp !== '' ? Number(u.builtUp) : null,
+  super_built_up_area: u.superBuiltUp != null && u.superBuiltUp !== '' ? Number(u.superBuiltUp) : null,
+  facing: u.facing || null,
+  parking: u.parking != null && u.parking !== '' ? Number(u.parking) : null,
+  furnishing: u.furnishing || null,
+  possession: u.possession || null,
+  rate_per_sqft: u.rate != null && u.rate !== '' ? Number(u.rate) : null,
+  price: u.price != null && u.price !== '' ? Number(u.price) : null,
+  plc: u.plc != null && u.plc !== '' ? Number(u.plc) : undefined,
+  maintenance: u.maintenance != null && u.maintenance !== '' ? Number(u.maintenance) : undefined,
+  other_charges: u.otherCharges != null && u.otherCharges !== '' ? Number(u.otherCharges) : undefined,
+  status: u.status || undefined,                 // DB default 'Available' owns it when not supplied
+  listed_by: u.listedBy || null,
+  listing_agent_id: u.listingAgent || null,       // must be a real agents.id — never the auth user id
+  exclusive: !!u.exclusive,
+});
 const fromProjectRow = (r, units) => {
   const us = units || [];
   return { id: r.id, name: val(r, ['name'], '—'), developer: val(r, ['developer','developer_name'], ''), city: val(r, ['city'], ''),
@@ -1128,12 +1159,37 @@ const fromProjectRow = (r, units) => {
     rateMin: us.length ? Math.min(...us.map(u => u.rate || 0)) : 0, rateMax: us.length ? Math.max(...us.map(u => u.rate || 0)) : 0,
     totalUnits: us.length };
 };
-const fromPropertyRow = r => ({ id: r.id, title: val(r, ['title','name'], '—'), locality: val(r, ['locality'], ''), city: val(r, ['city'], ''),
-  type: val(r, ['property_type','type'], ''), config: val(r, ['configuration','config'], ''), carpet: val(r, ['carpet_area','carpet'], 0),
-  price: val(r, ['price','asking_price'], 0), status: val(r, ['status'], 'Available'), owner: val(r, ['owner_name','owner'], ''),
-  listedBy: val(r, ['listed_by'], ''), agent: val(r, ['listing_agent_id','agent_id'], ''), exclusive: !!r.exclusive,
-  floor: String(val(r, ['floor'], '—')), furnishing: val(r, ['furnishing'], '—'), possession: val(r, ['possession'], 'Immediate'),
-  img: arr1(val(r, ['photos','cover_image'], 'resale')), age: String(val(r, ['age','property_age'], '—')) });
+/* ---- properties: VERIFIED columns (schema-confirmed) — hard write-allowlist. ---- */
+const PROPERTY_COLUMNS = new Set(['organization_id','title','locality','city','property_type','configuration','carpet_area','price','status','owner_name','owner_phone','listed_by','listing_agent_id','exclusive','floor','furnishing','possession','age_years','image_url']);
+const scrubPropertyRow = (row, { keepNull = false } = {}) => Object.fromEntries(
+  Object.entries(row).filter(([k, v]) => PROPERTY_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
+const fromPropertyRow = r => ({ id: r.id, title: r.title ?? '—', locality: r.locality ?? '', city: r.city ?? '',
+  type: r.property_type ?? '', config: r.configuration ?? '', carpet: r.carpet_area ?? 0,
+  price: r.price ?? 0, status: r.status ?? 'Available', owner: r.owner_name ?? '',
+  ownerPhone: r.owner_phone ?? '', listedBy: r.listed_by ?? '', agent: r.listing_agent_id ?? '', exclusive: !!r.exclusive,
+  floor: String(r.floor ?? '—'), furnishing: r.furnishing ?? '—', possession: r.possession ?? 'Immediate',
+  img: arr1(r.image_url ?? 'resale'), age: String(r.age_years ?? '—') });
+const propertyToRow = (p, orgId) => scrubPropertyRow({
+  organization_id: orgId || undefined,           // runtime value from the authenticated profile — never hardcoded
+  title: p.title,
+  locality: p.locality || null,
+  city: p.city || null,
+  property_type: p.type || null,
+  configuration: p.config || null,
+  carpet_area: p.carpet != null && p.carpet !== '' ? Number(p.carpet) : null,
+  price: p.price != null && p.price !== '' ? Number(p.price) : null,
+  owner_name: p.owner || null,
+  owner_phone: p.ownerPhone || null,
+  listed_by: p.listedBy || null,
+  listing_agent_id: p.agent || null,              // must be a real agents.id — never the auth user id
+  exclusive: !!p.exclusive,
+  floor: p.floor || null,
+  furnishing: p.furnishing || null,
+  possession: p.possession || null,
+  age_years: p.age != null && p.age !== '' ? Number(p.age) : null,
+  image_url: p.img || null,
+  status: p.status || undefined,                 // DB default 'Available' owns it when not supplied
+});
 const fromVisitRow = r => ({ id: r.id, leadId: r.lead_id, agentId: r.agent_id, projectId: r.project_id || null,
   propertyId: r.property_id || null, unitId: val(r, ['inventory_unit_id','unit_id'], null),
   date: val(r, ['scheduled_at','visit_date','date'], null), time: String(val(r, ['scheduled_time','time'], '')),
@@ -1221,61 +1277,27 @@ const R = {
       }
       // resolve the entry stage from pipeline_stages (loaded at boot) — never a fallback string id
       let entryStage = null;
-if (pipelineService.loaded()){
-  const stages = pipelineService.stages();
-  entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
-}
-
-const rows = await ins(
-  'leads',
-  [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]
-);
-
-// newly created lead
-const l = rows && rows[0];
-
-// round-robin auto-assignment — ONLY for newly created leads
-// Do not run when an agent was manually selected.
-if (!data.agentId && l){
-  try {
-    const c = await client();
-    const rr = await c.rpc('assign_lead_round_robin', {
-      p_lead_id: l.id,
-      p_organization_id: authOrgId()
-    });
-
-    if (rr.error) {
-      console.warn(
-        'assign_lead_round_robin RPC error:',
-        rr.error.message
-      );
-    }
-  } catch(e) {
-    console.warn(
-      'assign_lead_round_robin RPC not confirmed:',
-      e.message
-    );
-  }
-}
-
-// secondary activity log — only after the primary insert succeeded, never blocks it
-if (l){
-  try {
-    await ins('lead_activities', [{
-      lead_id: l.id,
-      agent_id: authAgentId(),
-      type: 'note',
-      text: 'Lead created'
-    }]);
-  } catch(e){
-    console.warn(
-      'lead_activities write not confirmed (check column names / SELECT policy):',
-      e.message
-    );
-  }
-}
-
-return rows;
+      if (pipelineService.loaded()){
+        const stages = pipelineService.stages();
+        entryStage = (stages.find(s => /new/i.test(s.label)) || stages[0] || {}).id || null;
+      }
+      const rows = await ins('leads', [leadToRow({ ...data, sourceId, stage: data.stage || entryStage }, authOrgId())]);
+      // secondary activity log — only after the primary insert succeeded, never blocks it
+      const l = rows && rows[0];
+      if (l){ try { await ins('lead_activities', [{ lead_id: l.id, agent_id: authAgentId(), type: 'note', text: 'Lead created' }]); }
+        catch(e){ console.warn('lead_activities write not confirmed (check column names / SELECT policy):', e.message); } }
+      return rows;
+    },
+    async update(id, patch){
+      const row = leadPatchToRow(patch);
+      let rows;
+      if (Object.keys(row).length){ rows = await upd('leads', { id }, row); }   // primary mutation first
+      else { rows = await sel('leads', { eq: { id } }); }
+      if (patch.agentId !== undefined && patch.agentId){                        // secondary, non-blocking
+        try { await ins('lead_assignments', [{ lead_id: id, agent_id: patch.agentId, assigned_by: authAgentId() }]); }
+        catch(e){ console.warn('lead_assignments write not confirmed (check column names / SELECT policy):', e.message); }
+      }
+      return rows;
     },
     async remove(id){
       const c = await client();
@@ -1292,7 +1314,18 @@ return rows;
       type: entry.type || 'note', text: entry.text || '', created_at: entry.at || new Date().toISOString() }]),
   },
   projects: { list: () => sel('projects', { limit: 200 }), get: async id => (await sel('projects', { eq: { id } }))[0] },
-  properties: { list: () => sel('properties', { limit: 500 }), get: async id => (await sel('properties', { eq: { id } }))[0] },
+  properties: {
+    list: () => sel('properties', { limit: 500 }),
+    get: async id => (await sel('properties', { eq: { id } }))[0],
+    async create(data){
+      if (!authOrgId()) throw new Error('No organization loaded — organization_id requires your profile. Sign out and sign in again to reload your profile.');
+      if (!data.title || !String(data.title).trim()) throw new Error('Title is required.');
+      const row = propertyToRow(data, authOrgId());
+      const rows = await ins('properties', [row]);      // fails loudly if INSERT returns no row (see ins())
+      if (!rows[0] || !rows[0].id) throw new Error('Property insert returned no row — check the RLS SELECT policy on properties.');
+      return rows;
+    },
+  },
   inventory: {
     async list(filters = {}){ let rows = await sel('inventory_units', { limit: 2000 });
       if (filters.projectId) rows = rows.filter(u => u.project_id === filters.projectId);
@@ -1306,6 +1339,14 @@ return rows;
     async setStatus(id, status){
       const rows = await upd('inventory_units', { id }, { status });
       if (!rows[0] || rows[0].status !== status) throw new Error('Inventory status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
+      return rows;
+    },
+    async create(data){
+      if (!authOrgId()) throw new Error('No organization loaded — organization_id requires your profile. Sign out and sign in again to reload your profile.');
+      if (!data.projectId) throw new Error('Project is required — no real project selected.');
+      const row = unitToRow(data, authOrgId());
+      const rows = await ins('inventory_units', [row]);  // fails loudly if INSERT returns no row (see ins())
+      if (!rows[0] || !rows[0].id) throw new Error('Inventory unit insert returned no row — check the RLS SELECT policy on inventory_units.');
       return rows;
     },
   },
@@ -1621,12 +1662,20 @@ const projectService = {
 const propertyService = {
   async getProperties(){ return demoMode() ? demo.propertyService.getProperties() : (await R.properties.list()).map(fromPropertyRow); },
   async getProperty(id){ return demoMode() ? demo.propertyService.getProperty(id) : fromPropertyRow(await R.properties.get(id)); },
+  async createProperty(data){
+    if (demoMode()) throw new Error('Adding properties isn\'t available in Demo Mode.');   // demo mode is left untouched — no mock write path
+    return fromPropertyRow((await R.properties.create(data))[0]);
+  },
 };
 const inventoryService = {
   async getInventory(filters = {}){ return demoMode() ? demo.inventoryService.getInventory(filters) : (await R.inventory.list(filters)).map(fromUnitRow); },
   async getUnit(id){ return demoMode() ? demo.inventoryService.getUnit(id) : fromUnitRow(await R.inventory.get(id)); },
   async getUnitsByIds(ids){ return demoMode() ? demo.inventoryService.getUnitsByIds(ids) : (await R.inventory.byIds(ids)).map(fromUnitRow); },
   async setUnitStatus(id, status){ return demoMode() ? demo.inventoryService.setUnitStatus(id, status) : fromUnitRow((await R.inventory.setStatus(id, status))[0] || {}); },
+  async createUnit(data){
+    if (demoMode()) throw new Error('Adding inventory units isn\'t available in Demo Mode.');  // demo mode is left untouched — no mock write path
+    return fromUnitRow((await R.inventory.create(data))[0]);
+  },
 };
 const dealService = {
   async getDeals(){ return demoMode() ? demo.dealService.getDeals() : (await R.deals.list()).map(fromDealRow).sort(descBy('createdAt')); },
@@ -2134,6 +2183,67 @@ async function newTaskModal(leadId){
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="taskForm">${icon('plus',14)} Create task</button>`);
 }
+async function newPropertyModal(){
+  const agents = await agentService.getAgents();
+  const agentOpts = agents.map(a => `<option value="${a.id}" ${authAgentId() === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  modal('New property',
+    `<form data-form="property" id="propertyForm">
+      <label class="f">Title *</label><input class="inp" name="title" required placeholder="e.g. 3BHK Resale — Sector 57">
+      <div class="frow"><div><label class="f">City</label><input class="inp" name="city" value="Gurugram"></div>
+      <div><label class="f">Locality</label><input class="inp" name="locality" placeholder="e.g. Sector 57"></div></div>
+      <div class="frow"><div><label class="f">Type</label><select class="inp" name="type"><option>Apartment</option><option>Builder Floor</option><option>Villa</option><option>Plot</option><option>Office</option><option>Retail</option></select></div>
+      <div><label class="f">Configuration</label><input class="inp" name="config" placeholder="e.g. 3BHK"></div></div>
+      <div class="frow"><div><label class="f">Carpet area (sqft)</label><input class="inp" name="carpet" type="number" min="0" step="1"></div>
+      <div><label class="f">Price (₹)</label><input class="inp" name="price" type="number" min="0" step="1000"></div></div>
+      <div class="frow"><div><label class="f">Floor</label><input class="inp" name="floor" placeholder="e.g. 4th of 12"></div>
+      <div><label class="f">Furnishing</label><select class="inp" name="furnishing"><option>Unfurnished</option><option>Semi-furnished</option><option>Furnished</option></select></div></div>
+      <div class="frow"><div><label class="f">Possession</label><input class="inp" name="possession" placeholder="e.g. Immediate"></div>
+      <div><label class="f">Age (years)</label><input class="inp" name="age" type="number" min="0" step="1"></div></div>
+      <div class="frow"><div><label class="f">Owner name</label><input class="inp" name="owner"></div>
+      <div><label class="f">Owner phone</label><input class="inp" name="ownerPhone"></div></div>
+      <div class="frow"><div><label class="f">Listed by</label><input class="inp" name="listedBy"></div>
+      <div><label class="f">Listing agent</label><select class="inp" name="agent"><option value="">—</option>${agentOpts}</select></div></div>
+      <label class="f"><input type="checkbox" name="exclusive"> Exclusive listing</label>
+      <div class="fhint" style="margin-top:10px">Persisted columns: title · locality · city · property_type · configuration · carpet_area · price · owner_name · owner_phone · listed_by · listing_agent_id · exclusive · floor · furnishing · possession · age_years. Status defaults to <b>Available</b>.</div>
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="propertyForm">${icon('plus',14)} Create property</button>`);
+}
+async function newInventoryUnitModal(projectId){
+  const [projects, agents] = await Promise.all([projectService.getProjects(), agentService.getAgents()]);
+  if (!projects.length){
+    modal('New inventory unit', `<div class="fhint">No projects exist yet. An inventory unit must belong to a real project — create a project first, then add units.</div>`,
+      `<button class="btn ghost" data-action="closeModal">Close</button>`);
+    return;
+  }
+  const projOpts = projects.map(p => `<option value="${p.id}" ${p.id === projectId ? 'selected' : ''}>${esc(p.name)}${p.locality ? ' · ' + esc(p.locality) : ''}</option>`).join('');
+  const agentOpts = agents.map(a => `<option value="${a.id}" ${authAgentId() === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  modal('New inventory unit',
+    `<form data-form="unit" id="unitForm">
+      <label class="f">Project *</label><select class="inp" name="projectId" required>${projOpts}</select>
+      <div class="frow"><div><label class="f">Tower</label><input class="inp" name="tower" placeholder="e.g. Tower B"></div>
+      <div><label class="f">Floor</label><input class="inp" name="floor" type="number" min="0" step="1"></div></div>
+      <div class="frow"><div><label class="f">Unit number *</label><input class="inp" name="unitNo" required placeholder="e.g. B-1204"></div>
+      <div><label class="f">Configuration</label><input class="inp" name="config" placeholder="e.g. 3BHK"></div></div>
+      <div class="frow"><div><label class="f">BHK</label><input class="inp" name="bhk" type="number" min="0" step="1"></div>
+      <div><label class="f">Facing</label><input class="inp" name="facing" placeholder="e.g. East"></div></div>
+      <div class="frow"><div><label class="f">Carpet area (sqft)</label><input class="inp" name="carpet" type="number" min="0" step="1"></div>
+      <div><label class="f">Built-up area (sqft)</label><input class="inp" name="builtUp" type="number" min="0" step="1"></div></div>
+      <div class="frow"><div><label class="f">Super built-up area (sqft)</label><input class="inp" name="superBuiltUp" type="number" min="0" step="1"></div>
+      <div><label class="f">Parking</label><input class="inp" name="parking" type="number" min="0" step="1"></div></div>
+      <div class="frow"><div><label class="f">Rate per sqft (₹)</label><input class="inp" name="rate" type="number" min="0" step="1"></div>
+      <div><label class="f">Price (₹)</label><input class="inp" name="price" type="number" min="0" step="1000"></div></div>
+      <div class="frow"><div><label class="f">PLC (₹)</label><input class="inp" name="plc" type="number" min="0" step="100"></div>
+      <div><label class="f">Maintenance (₹)</label><input class="inp" name="maintenance" type="number" min="0" step="100"></div></div>
+      <div class="frow"><div><label class="f">Other charges (₹)</label><input class="inp" name="otherCharges" type="number" min="0" step="100"></div>
+      <div><label class="f">Furnishing</label><select class="inp" name="furnishing"><option>Unfurnished</option><option>Semi-furnished</option><option>Furnished</option></select></div></div>
+      <label class="f">Possession</label><input class="inp" name="possession" placeholder="e.g. Dec 2026">
+      <div class="frow"><div><label class="f">Listed by</label><input class="inp" name="listedBy"></div>
+      <div><label class="f">Listing agent</label><select class="inp" name="agent"><option value="">—</option>${agentOpts}</select></div></div>
+      <label class="f"><input type="checkbox" name="exclusive"> Exclusive listing</label>
+      <div class="fhint" style="margin-top:10px">Persisted columns: project_id · tower · floor · unit_number · configuration · bhk · carpet_area · built_up_area · super_built_up_area · facing · parking · furnishing · possession · rate_per_sqft · price · plc · maintenance · other_charges · listed_by · listing_agent_id · exclusive. Status defaults to <b>Available</b>.</div>
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="unitForm">${icon('plus',14)} Create unit</button>`);
+}
 function completeVisitModal(v){
   modal('Record visit outcome',
     `<form data-form="visitOutcome" data-id="${v.id}" id="voForm">
@@ -2476,7 +2586,8 @@ PAGES.properties = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents);
   root.innerHTML = `
-    ${pageHead('Inventory', 'Properties', `Resale, rental and commercial listings.`)}
+    ${pageHead('Inventory', 'Properties', `Resale, rental and commercial listings.`, `
+      <button class="btn" data-action="newProperty">${icon('plus',14)} New property</button>`)}
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
       <thead><tr><th>Listing</th><th>Locality</th><th class="num">Carpet</th><th class="num">Price</th><th>Status</th><th>Owner / Listed by</th><th>Agent</th><th class="num">Rate</th></tr></thead>
       <tbody>${props.map(x => `<tr data-action="openProperty" data-id="${x.id}">
@@ -2509,7 +2620,8 @@ PAGES.inventory = { async render(root, p, seq){
   const rateBars = charts.hbars(configs.map(c => { const us = allUnits.filter(u => u.config === c);
     return { l: c || '—', v: Math.round(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length), tip: psf(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length) + ' · ' + us.length + ' units', c: '#1F6B4D' }; }));
   root.innerHTML = `
-    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.`)}
+    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.`, `
+      <button class="btn" data-action="newUnit" data-project="${pid || ''}">${icon('plus',14)} New unit</button>`)}
     <div class="filterbar">
       <select class="inp" id="invPrj">${projects.map(x => `<option value="${x.id}" ${x.id === pid ? 'selected' : ''}>${esc(x.name)}${x.locality ? ' · ' + esc(x.locality) : ''}</option>`).join('')}</select>
       <div class="seg" id="invView"><button data-action="invView" data-view="map" class="${view === 'map' ? 'active' : ''}">Tower map</button><button data-action="invView" data-view="grid" class="${view === 'grid' ? 'active' : ''}">Unit list</button></div>
@@ -3035,6 +3147,8 @@ const Actions = {
   newVisitFor(d){ newVisitModal(d.id); },
   newTask(){ newTaskModal(); },
   newTaskFor(d){ newTaskModal(d.id); },
+  newProperty(){ newPropertyModal(); },
+  newUnit(d){ newInventoryUnitModal(d && d.project); },
   async editLead(d){ const lead = await leadService.getLead(d.id); if (lead) editLeadModal(lead); },
   deleteLead(d){ confirmBox('Delete lead?', `This permanently removes the lead from the <b>leads</b> table. Dependent rows (activities, assignments, visits, tasks, deals) may block the delete — the real database error will be shown if so.`, async () => {
       try { await leadService.deleteLead(d.id); closeDrawer(); toast('Lead deleted — re-read confirmed absence'); refresh(); }
@@ -3231,6 +3345,48 @@ document.addEventListener('submit', async e => {
       await taskService.createTask({ type: fd.type, title: fd.title, leadId: fd.leadId || null, agentId: fd.agentId,
         dueAt: new Date(fd.date + 'T10:00').toISOString(), priority: fd.priority, notes: fd.notes || '' });
       closeModal(); toast('Task created with status Open — verified'); refresh();
+    });
+    return;
+  }
+  if (kind === 'property'){
+    await guardForm(f, async () => {
+      const created = await propertyService.createProperty({
+        title: fd.title.trim(), city: fd.city || null, locality: fd.locality || null,
+        type: fd.type || null, config: fd.config || null,
+        carpet: fd.carpet, price: fd.price,
+        floor: fd.floor || null, furnishing: fd.furnishing || null, possession: fd.possession || null,
+        age: fd.age, owner: fd.owner || null, ownerPhone: fd.ownerPhone || null,
+        listedBy: fd.listedBy || null, agent: fd.agent || null, exclusive: fd.exclusive === 'on',
+      });
+      // read-back verification: re-read the row and assert the fields Supabase actually stored
+      if (prodMode()){
+        const check = await propertyService.getProperty(created.id);
+        if (!check || !check.id) throw new Error('Insert succeeded but the property could not be re-read — check the RLS SELECT policy on properties.');
+        if (check.title !== fd.title.trim()) throw new Error('Title verification failed — database returned "' + check.title + '".');
+      }
+      closeModal(); toast('Property created' + (prodMode() ? ' — verified in Supabase' : '')); refresh();
+    });
+    return;
+  }
+  if (kind === 'unit'){
+    await guardForm(f, async () => {
+      if (!fd.projectId) throw new Error('Project is required.');
+      const created = await inventoryService.createUnit({
+        projectId: fd.projectId, tower: fd.tower || null, floor: fd.floor,
+        unitNo: fd.unitNo.trim(), config: fd.config || null, bhk: fd.bhk, facing: fd.facing || null,
+        carpet: fd.carpet, builtUp: fd.builtUp, superBuiltUp: fd.superBuiltUp, parking: fd.parking,
+        rate: fd.rate, price: fd.price, plc: fd.plc, maintenance: fd.maintenance, otherCharges: fd.otherCharges,
+        furnishing: fd.furnishing || null, possession: fd.possession || null,
+        listedBy: fd.listedBy || null, listingAgent: fd.agent || null, exclusive: fd.exclusive === 'on',
+      });
+      // read-back verification: re-read the row and assert the FK + unit number Supabase actually stored
+      if (prodMode()){
+        const check = await inventoryService.getUnit(created.id);
+        if (!check || !check.id) throw new Error('Insert succeeded but the unit could not be re-read — check the RLS SELECT policy on inventory_units.');
+        if (String(check.projectId) !== String(fd.projectId)) throw new Error('project_id verification failed — expected ' + fd.projectId + ', database returned ' + check.projectId + '.');
+        if (check.unitNo !== fd.unitNo.trim()) throw new Error('Unit number verification failed — database returned "' + check.unitNo + '".');
+      }
+      closeModal(); toast('Inventory unit created' + (prodMode() ? ' — verified in Supabase' : '')); refresh();
     });
     return;
   }
