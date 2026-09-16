@@ -524,6 +524,7 @@ const EVENT_CATALOG = ['lead.created','lead.assigned','lead.scored','lead.status
    No 'Pending' anywhere in the application — UI uses DB terminology. */
 const TASK_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
 const TASK_OPEN = 'Open';
+const LEAD_PROPERTY_STATUSES = ['Interested', 'Shortlisted', 'Visit Scheduled', 'Visited', 'Negotiation', 'Rejected', 'Booked'];
 const taskOpen = t => !!t && (t.status === 'Open' || t.status === 'In Progress');
 
 /* ============================== lead scoring (shared; prefers DB score when present) ============================== */
@@ -795,6 +796,7 @@ function seed(){
     { id:'nt_12', type:'marketing', title:'Marketing anomaly', body:'MagicBricks spend ₹52k with zero closures', entity:{kind:'page',id:'marketing'}, at:daysAgo(4), read:true },
   ];
   return { organization, agents, projects, properties, inventory, leads, deals, visits, commissions, tasks, convos, notifications, marketing: structuredClone(MKT_PLANS),
+    leadProperties: [],   // demo mirror of the lead_properties junction table — in-memory only, resets on refresh
     audit: [{ at:daysAgo(1), actor:'Vikram Khanna', action:'Deal stage changed', entity:'dl_06', details:'booking → agreement' },{ at:daysAgo(2), actor:'Sneha Reddy', action:'Lead assigned', entity:'ld_02', details:'assigned' }] };
 }
 
@@ -870,6 +872,44 @@ const demo = (function(){
       async getUnitsByIds(ids){ await gate(); return clone(mockDB.inventory.filter(u=>ids.includes(u.id))); },
       async setUnitStatus(id, status){ await gate(); const u = mockDB.inventory.find(x=>x.id===id); u.status = status;
         recordAudit('Inventory updated', id, 'status → ' + status); EventBus.emit('inventory.status_changed', { entityId:id, status }); return clone(u); },
+    },
+    /* ---- lead_properties (demo mirror) — isolated mock, in the app's internal
+       (camelCase) shape rather than raw DB columns, matching how the rest of
+       mockDB is already stored. Never touches Supabase. ---- */
+    leadPropertiesService: {
+      async listByLead(leadId){ await gate();
+        return clone(mockDB.leadProperties.filter(x => x.leadId === leadId).map(x => ({ ...x,
+          property: x.propertyId ? (mockDB.properties.find(p => p.id === x.propertyId) || null) : null,
+          unit: x.inventoryUnitId ? (mockDB.inventory.find(u => u.id === x.inventoryUnitId) || null) : null }))); },
+      async listByProperty(propertyId){ await gate();
+        return clone(mockDB.leadProperties.filter(x => x.propertyId === propertyId).map(x => ({ ...x,
+          lead: mockDB.leads.find(l => l.id === x.leadId) || null }))); },
+      async listByInventoryUnit(unitId){ await gate();
+        return clone(mockDB.leadProperties.filter(x => x.inventoryUnitId === unitId).map(x => ({ ...x,
+          lead: mockDB.leads.find(l => l.id === x.leadId) || null }))); },
+      async connect(data){ await gate();
+        if (!data.leadId) throw new Error('leadId is required.');
+        const hasProp = !!data.propertyId, hasUnit = !!data.inventoryUnitId;
+        if (hasProp === hasUnit) throw new Error('Select exactly one property or inventory unit to connect — never both, never neither.');
+        const dup = mockDB.leadProperties.find(x => x.leadId === data.leadId &&
+          ((hasProp && x.propertyId === data.propertyId) || (hasUnit && x.inventoryUnitId === data.inventoryUnitId)));
+        if (dup) throw new Error('This property is already connected to this lead.');
+        const rec = { id:'lp_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7),
+          leadId:data.leadId, propertyId:data.propertyId || null, inventoryUnitId:data.inventoryUnitId || null,
+          interestStatus:data.interestStatus || 'Interested', notes:data.notes || '',
+          createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() };
+        mockDB.leadProperties.unshift(rec);
+        recordAudit('Lead connected to property', rec.id, rec.interestStatus); return clone(rec); },
+      async updateStatus(id, status){ await gate();
+        const r = mockDB.leadProperties.find(x => x.id === id); if (!r) throw new Error('Relationship not found');
+        r.interestStatus = status; r.updatedAt = new Date().toISOString();
+        recordAudit('Lead-property status updated', id, status); return clone(r); },
+      async updateNotes(id, notes){ await gate();
+        const r = mockDB.leadProperties.find(x => x.id === id); if (!r) throw new Error('Relationship not found');
+        r.notes = notes || ''; r.updatedAt = new Date().toISOString(); return clone(r); },
+      async disconnect(id){ await gate();
+        mockDB.leadProperties = mockDB.leadProperties.filter(x => x.id !== id);
+        recordAudit('Lead-property connection removed', id, ''); return true; },
     },
     dealService: {
       async getDeals(){ await gate(); return clone(mockDB.deals); },
@@ -1235,6 +1275,20 @@ const fromInsightRow = r => ({ type: val(r, ['type','insight_type','category'], 
   title: val(r, ['title','name'], 'Insight'), body: val(r, ['body','explanation','description','message'], ''),
   act: { label: val(r, ['action_label','suggested_action_label'], null), action: val(r, ['action','suggested_action'], null),
     id: String(val(r, ['entity_id','related_entity_id'], '') || '') } });
+/* ---- lead_properties: junction table row → UI shape. property_id/inventory_unit_id
+   are mutually exclusive (DB constraint owns that rule — never re-enforced here beyond
+   the frontend guard in R.leadProperties.connect). Embedded relations (properties /
+   inventory_units / leads) are only present when the query asked PostgREST to embed
+   them — each is mapped through the SAME row-mapper already used for that table, so
+   this never invents a second set of column-name assumptions. ---- */
+const fromLeadPropertyRow = r => ({
+  id: r.id, leadId: r.lead_id, propertyId: r.property_id || null, inventoryUnitId: r.inventory_unit_id || null,
+  interestStatus: r.interest_status || 'Interested', notes: r.notes || '',
+  createdAt: r.created_at || null, updatedAt: r.updated_at || null,
+  property: r.properties ? fromPropertyRow(r.properties) : null,
+  unit: r.inventory_units ? fromUnitRow(r.inventory_units) : null,
+  lead: r.leads ? fromLeadRow(r.leads) : null,
+});
 
 /* =====================================================================
    /remote — production Supabase implementations (RLS-scoped by design).
@@ -1348,6 +1402,63 @@ const R = {
       const rows = await ins('inventory_units', [row]);  // fails loudly if INSERT returns no row (see ins())
       if (!rows[0] || !rows[0].id) throw new Error('Inventory unit insert returned no row — check the RLS SELECT policy on inventory_units.');
       return rows;
+    },
+  },
+  /* ---- lead_properties: existing junction table (already created + secured in
+     Supabase — see the migration notes). This service only reads/writes against
+     it; it never creates, alters, or drops any table/column/constraint/RLS
+     policy. property_id vs inventory_unit_id exclusivity is enforced by the
+     existing DB constraint — the connect() guard below is a frontend UX check,
+     not a replacement for it. ---- */
+  leadProperties: {
+    async listByLead(leadId){ return sel('lead_properties', { eq: { lead_id: leadId }, cols: '*, properties(*), inventory_units(*)' }); },
+    async listByProperty(propertyId){ return sel('lead_properties', { eq: { property_id: propertyId }, cols: '*, leads(*)' }); },
+    async listByInventoryUnit(unitId){ return sel('lead_properties', { eq: { inventory_unit_id: unitId }, cols: '*, leads(*)' }); },
+    async connect(data){
+      if (!data.leadId) throw new Error('leadId is required.');
+      const hasProp = !!data.propertyId, hasUnit = !!data.inventoryUnitId;
+      if (hasProp === hasUnit) throw new Error('Select exactly one property or inventory unit to connect — never both, never neither.');
+      if (!authOrgId()) throw new Error('No organization loaded — organization_id requires your profile. Sign out and sign in again to reload your profile.');
+      const row = {
+        organization_id: authOrgId(),        // runtime value from the authenticated profile — never hardcoded
+        lead_id: data.leadId,
+        property_id: data.propertyId || null,
+        inventory_unit_id: data.inventoryUnitId || null,
+        interest_status: data.interestStatus || 'Interested',
+        notes: data.notes || null,
+      };
+      let rows;
+      try { rows = await ins('lead_properties', [row]); }
+      catch(e){
+        if (/duplicate key|unique constraint/i.test(e.message)) throw new Error('This property is already connected to this lead.');
+        throw e;
+      }
+      if (!rows[0] || !rows[0].id) throw new Error('Connection insert returned no row — check the RLS SELECT policy on lead_properties.');
+      // read-back verification, consistent with the other production create flows
+      const check = await sel('lead_properties', { eq: { id: rows[0].id } });
+      if (!check[0]) throw new Error('Insert succeeded but the relationship could not be re-read — check the RLS SELECT policy on lead_properties.');
+      if (String(check[0].lead_id) !== String(data.leadId)) throw new Error('lead_id verification failed on the newly created relationship.');
+      return rows;
+    },
+    async updateStatus(id, status){
+      const rows = await upd('lead_properties', { id }, { interest_status: status, updated_at: new Date().toISOString() });
+      if (!rows[0] || rows[0].interest_status !== status) throw new Error('Interest status verification failed — database returned "' + (rows[0] ? rows[0].interest_status : 'nothing') + '" after update.');
+      return rows;
+    },
+    async updateNotes(id, notes){
+      const val2 = notes || null;
+      const rows = await upd('lead_properties', { id }, { notes: val2, updated_at: new Date().toISOString() });
+      if (!rows[0]) throw new Error('Notes update returned no row — row not found or blocked by RLS.');
+      if ((rows[0].notes || null) !== val2) throw new Error('Notes verification failed — database did not store the expected value.');
+      return rows;
+    },
+    async disconnect(id){
+      const c = await client();
+      const res = await c.from('lead_properties').delete().eq('id', id);
+      if (res.error) throw new Error(res.error.message);       // dependent FK violations surface here
+      const after = await sel('lead_properties', { eq: { id } });
+      if (after.length) throw new Error('Delete reported success but the relationship row is still readable — check RLS.');
+      return true;
     },
   },
   deals: {
@@ -1677,6 +1788,15 @@ const inventoryService = {
     return fromUnitRow((await R.inventory.create(data))[0]);
   },
 };
+const leadPropertiesService = {
+  async listByLead(leadId){ return demoMode() ? demo.leadPropertiesService.listByLead(leadId) : (await R.leadProperties.listByLead(leadId)).map(fromLeadPropertyRow); },
+  async listByProperty(propertyId){ return demoMode() ? demo.leadPropertiesService.listByProperty(propertyId) : (await R.leadProperties.listByProperty(propertyId)).map(fromLeadPropertyRow); },
+  async listByInventoryUnit(unitId){ return demoMode() ? demo.leadPropertiesService.listByInventoryUnit(unitId) : (await R.leadProperties.listByInventoryUnit(unitId)).map(fromLeadPropertyRow); },
+  async connect(data){ return demoMode() ? demo.leadPropertiesService.connect(data) : fromLeadPropertyRow((await R.leadProperties.connect(data))[0]); },
+  async updateStatus(id, status){ return demoMode() ? demo.leadPropertiesService.updateStatus(id, status) : fromLeadPropertyRow((await R.leadProperties.updateStatus(id, status))[0] || {}); },
+  async updateNotes(id, notes){ return demoMode() ? demo.leadPropertiesService.updateNotes(id, notes) : fromLeadPropertyRow((await R.leadProperties.updateNotes(id, notes))[0] || {}); },
+  async disconnect(id){ return demoMode() ? demo.leadPropertiesService.disconnect(id) : R.leadProperties.disconnect(id); },
+};
 const dealService = {
   async getDeals(){ return demoMode() ? demo.dealService.getDeals() : (await R.deals.list()).map(fromDealRow).sort(descBy('createdAt')); },
   async getDeal(id){ return demoMode() ? demo.dealService.getDeal(id) : fromDealRow(await R.deals.get(id)); },
@@ -1958,7 +2078,36 @@ function confirmBox(title, body, onYes){
 }
 
 /* ============================== DRAWER BUILDERS ============================== */
-function leadDrawer(l, agents, activities){
+function interestedPropertiesSection(l, list){
+  const row = ip => {
+    const isProp = !!ip.property; const item = isProp ? ip.property : ip.unit;
+    if (!item) return '';
+    const title = isProp ? esc(item.title) : `Tower ${esc(item.tower || '—')} · Unit ${esc(item.unitNo || '—')}`;
+    const sub = isProp ? `${esc(item.config || '—')} · ${esc(item.locality || '—')}`
+      : `${esc(item.config || (item.bhk ? item.bhk + ' BHK' : '—'))} · ${item.carpet ? item.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'}`;
+    const price = inrFull(item.price) + (isProp && item.type === 'Rental' ? ' / month' : '');
+    const statusOpts = LEAD_PROPERTY_STATUSES.map(s => `<option ${ip.interestStatus === s ? 'selected' : ''}>${s}</option>`).join('');
+    return `<div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><div class="cellstrong">${title}</div><div class="cellsub">${sub}</div><div class="cellsub" style="margin-top:2px;font-weight:600">${price}</div></div>
+        <select class="inp" style="height:28px;padding:0 6px;width:auto" data-change="leadPropertyStatus" data-id="${ip.id}" data-lead-id="${l.id}">${statusOpts}</select>
+      </div>
+      ${ip.notes ? `<p style="margin-top:8px;font-size:12px;color:var(--ink2)">${esc(ip.notes)}</p>` : ''}
+      <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap">
+        <button class="btn sm ghost" data-action="${isProp ? 'openProperty' : 'openUnit'}" data-id="${item.id}">${icon('external',13)} ${isProp ? 'View property' : 'View unit'}</button>
+        <button class="btn sm ghost" data-action="editLeadPropertyNotes" data-id="${ip.id}" data-lead-id="${l.id}" data-notes="${esc(ip.notes || '')}">${icon('edit',13)} Notes</button>
+        <button class="btn sm ghost" style="color:var(--red)" data-action="removeLeadProperty" data-id="${ip.id}" data-lead-id="${l.id}">${icon('x',13)} Remove</button>
+      </div>
+    </div>`;
+  };
+  return `<div class="d-sec"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="st" style="margin:0">Interested Properties</div>
+      <button class="btn sm ghost" data-action="addLeadProperty" data-id="${l.id}">${icon('plus',13)} Add Property</button>
+    </div>
+    ${list.length ? list.map(row).join('') : '<p style="color:var(--ink3);font-size:12.5px">No properties connected to this lead yet.</p>'}
+  </div>`;
+}
+function leadDrawer(l, agents, activities, interestedProperties = []){
   const total = leadScoringService.score(l); const temp = leadScoringService.tempOf(l);
   const sc = l.dbFactors ? { factors: l.dbFactors, total } : leadScoringService.breakdown(l);
   const nm = nmOf(agents);
@@ -2000,6 +2149,7 @@ function leadDrawer(l, agents, activities){
       <select class="inp" data-change="leadStage" data-id="${l.id}">${stages}</select>
       ${l.notes ? `<p style="margin-top:12px;font-size:12.5px;color:var(--ink2)">${esc(l.notes)}</p>` : ''}
     </div>
+    ${interestedPropertiesSection(l, interestedProperties)}
     <div class="d-sec"><div class="st">Activity timeline</div>
       <div class="timeline">${activities.length ? activities.map(a => `<div class="tle"><div class="tt">${a.type === 'visit' ? 'Site visit' : a.type === 'call' ? 'Call' : a.type === 'whatsapp' ? 'WhatsApp' : a.type === 'email' ? 'Email' : 'Note'} — ${esc(a.text)}</div><div class="tm">${fmtDT(a.at)} · ${esc(nm(a.by))}</div></div>`).join('') : '<p style="color:var(--ink3);font-size:12.5px">No activity recorded yet.</p>'}</div>
     </div>
@@ -2037,7 +2187,16 @@ function dealDrawer(d, ctx){
       <select class="inp" data-change="dealStage" data-id="${d.id}">${stageOpts}</select>
     </div>`);
 }
-function unitDrawer(u, project, agents){
+function interestedLeadsSection(list, nm){
+  if (!list || !list.length) return '';
+  return `<div class="d-sec"><div class="st">Interested Leads (${list.length})</div>
+    ${list.filter(ip => ip.lead).map(ip => `<div class="kv" style="cursor:pointer" data-action="openLead" data-id="${ip.lead.id}">
+        <span class="k">${esc(ip.lead.name)}</span>
+        <span class="v">${chip(ip.interestStatus)} <span style="color:var(--ink3);font-size:11.5px">${esc(nm(ip.lead.agentId))}</span></span>
+      </div>`).join('')}
+  </div>`;
+}
+function unitDrawer(u, project, agents, interestedLeads = []){
   const nm = nmOf(agents);
   openDrawer(`${esc(project.name)} · Tower ${esc(u.tower)} · ${esc(u.unitNo)} &nbsp;${chip(u.status)}`,
     `<div class="d-sec"><div class="st">Pricing</div>
@@ -2069,7 +2228,8 @@ function unitDrawer(u, project, agents){
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${['Available','Hold'].includes(u.status) ? `<button class="btn sm ghost" data-action="holdUnit" data-id="${u.id}">${icon('clock',13)} Put on hold</button>` : ''}
       <button class="btn sm ghost" data-action="shareUnit" data-id="${u.id}">${icon('wa',13)} Share on WhatsApp</button>
-    </div>`);
+    </div>
+    ${interestedLeadsSection(interestedLeads, nm)}`);
 }
 function agentDrawer(a, stats){
   openDrawer(`${esc(a.name)} &nbsp;${chip(a.role)} &nbsp;${chip(a.status)}`,
@@ -2092,7 +2252,7 @@ function agentDrawer(a, stats){
       <p style="font-size:11.5px;color:var(--ink3);margin-top:8px">Role changes here are <span class="flag fe">Frontend hint</span> — production authorization is enforced by PostgreSQL RLS, never by this UI.</p>
     </div>`);
 }
-function propertyDrawer(x, agents){
+function propertyDrawer(x, agents, interestedLeads = []){
   const nm = nmOf(agents);
   openDrawer(`${esc(x.title)} · ${esc(x.config)} &nbsp;${chip(x.status)}`,
     `${x.img ? `<img src="https://picsum.photos/seed/${encodeURIComponent(String(x.img))}/640/300.jpg" style="width:100%;border-radius:10px;margin-bottom:14px" alt="">` : ''}
@@ -2106,7 +2266,8 @@ function propertyDrawer(x, agents){
       <div class="kv"><span class="k">Listed by</span><span class="v">${esc(x.listedBy)}${x.exclusive ? ' · <b style="color:var(--accent-ink)">Exclusive</b>' : ''}</span></div>
       <div class="kv"><span class="k">Listing agent</span><span class="v">${esc(nm(x.agent))}</span></div>
     </div>
-    <button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>`);
+    <button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>
+    ${interestedLeadsSection(interestedLeads, nm)}`);
 }
 
 /* ============================== FORMS ============================== */
@@ -2251,6 +2412,45 @@ function completeVisitModal(v){
       <label class="f">Next follow-up (days)</label><input class="inp" name="followUpDays" type="number" min="1" value="3">
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="voForm">${icon('check',14)} Save outcome</button>`);
+}
+async function addLeadPropertyModal(leadId){
+  const [properties, units] = await Promise.all([propertyService.getProperties(), inventoryService.getInventory()]);
+  const rows = [
+    ...properties.map(p => ({ kind:'property', id:p.id, label:esc(p.title), icon:'home',
+      sub:`${esc(p.config || '—')} · ${esc(p.locality || '—')} · ${inrFull(p.price)} · ${esc(p.status)}`,
+      hay:`${p.title} ${p.locality} ${p.city} ${p.config}`.toLowerCase() })),
+    ...units.map(u => ({ kind:'unit', id:u.id, label:`Tower ${esc(u.tower || '—')} · Unit ${esc(u.unitNo || '—')}`, icon:'layers',
+      sub:`${esc(u.config || (u.bhk ? u.bhk + ' BHK' : '—'))} · ${u.carpet ? u.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'} · ${inrFull(u.price)} · ${esc(u.status)}`,
+      hay:`${u.tower} ${u.unitNo} ${u.config} ${u.projectId}`.toLowerCase() })),
+  ];
+  const listHtml = rows.length ? rows.map(r => `<label class="sr-item" data-hay="${esc(r.hay)}" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex">
+      <input type="radio" name="selection" value="${r.kind}:${r.id}" style="margin-right:8px;margin-top:2px">
+      ${icon(r.icon,15)}
+      <div style="margin-left:6px"><b>${r.label}</b><div class="cellsub">${r.sub}</div></div>
+    </label>`).join('')
+    : '<div class="fhint">No properties or inventory units found yet. Add one from Properties or Inventory first.</div>';
+  const statusOpts = LEAD_PROPERTY_STATUSES.map(s => `<option ${s === 'Interested' ? 'selected' : ''}>${s}</option>`).join('');
+  modal('Add property to lead',
+    `<form data-form="leadProperty" data-lead-id="${leadId}" id="leadPropertyForm">
+      <label class="f">Search</label><input class="inp" id="lpSearch" placeholder="Search properties and inventory units…" autocomplete="off">
+      <div id="lpList" style="max-height:280px;overflow:auto;margin-top:8px">${listHtml}</div>
+      <label class="f" style="margin-top:12px">Interest status</label><select class="inp" name="interestStatus">${statusOpts}</select>
+      <label class="f">Notes</label><textarea class="inp" name="notes" placeholder="Optional — e.g. client liked the layout but wants a lower floor"></textarea>
+      <div class="fhint" style="margin-top:10px">Connects via the existing <b>lead_properties</b> table. A lead can hold multiple connections; a property or unit can be linked to multiple leads.</div>
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="leadPropertyForm">${icon('link',14)} Connect</button>`);
+  const search = $('#lpSearch');
+  if (search) search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    $$('#lpList label.sr-item').forEach(el => { el.style.display = (!q || el.dataset.hay.includes(q)) ? 'flex' : 'none'; });
+  });
+}
+function editLeadPropertyNotesModal(id, leadId, notes){
+  modal('Edit notes',
+    `<form data-form="leadPropertyNotes" data-id="${id}" data-lead-id="${leadId}" id="lpNotesForm">
+      <label class="f">Notes</label><textarea class="inp" name="notes" placeholder="e.g. Client liked the layout but wants a lower floor">${esc(notes)}</textarea>
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="lpNotesForm">${icon('check',14)} Save notes</button>`);
 }
 
 /* ============================== GLOBAL SEARCH ============================== */
@@ -3103,8 +3303,11 @@ const Actions = {
   async openLead(d){
     const [lead, agents] = await Promise.all([leadService.getLead(d.id), agentService.getAgents()]);
     if (!lead) return;
-    const activities = await leadActivityService.getActivities(d.id);
-    leadDrawer(lead, agents, activities);
+    const [activities, interestedProperties] = await Promise.all([
+      leadActivityService.getActivities(d.id),
+      leadPropertiesService.listByLead(d.id).catch(() => []),
+    ]);
+    leadDrawer(lead, agents, activities, interestedProperties);
   },
   async openDeal(d){
     const [deal, agents] = await Promise.all([dealService.getDeal(d.id), agentService.getAgents()]);
@@ -3120,11 +3323,14 @@ const Actions = {
     const [unit, agents] = await Promise.all([inventoryService.getUnit(d.id), agentService.getAgents()]);
     if (!unit) return;
     const project = await projectService.getProject(unit.projectId);
-    unitDrawer(unit, project, agents);
+    const interestedLeads = await leadPropertiesService.listByInventoryUnit(d.id).catch(() => []);
+    unitDrawer(unit, project, agents, interestedLeads);
   },
   async openProperty(d){
     const [prop, agents] = await Promise.all([propertyService.getProperty(d.id), agentService.getAgents()]);
-    if (prop) propertyDrawer(prop, agents);
+    if (!prop) return;
+    const interestedLeads = await leadPropertiesService.listByProperty(d.id).catch(() => []);
+    propertyDrawer(prop, agents, interestedLeads);
   },
   openProject(d){ go('project', { id:d.id }); },
   async openAgent(d){
@@ -3150,6 +3356,12 @@ const Actions = {
   newProperty(){ newPropertyModal(); },
   newUnit(d){ newInventoryUnitModal(d && d.project); },
   async editLead(d){ const lead = await leadService.getLead(d.id); if (lead) editLeadModal(lead); },
+  addLeadProperty(d){ addLeadPropertyModal(d.id); },
+  editLeadPropertyNotes(d){ editLeadPropertyNotesModal(d.id, d.leadId, d.notes || ''); },
+  removeLeadProperty(d){ confirmBox('Remove this connection?',
+      `This deletes only the relationship row in <b>lead_properties</b> — the lead, property, and inventory record are not affected.`, async () => {
+      try { await leadPropertiesService.disconnect(d.id); toast('Connection removed' + (prodMode() ? ' — verified in Supabase' : '')); await Actions.openLead({ id: d.leadId }); }
+      catch(err){ toast(esc(err.message)); } }); },
   deleteLead(d){ confirmBox('Delete lead?', `This permanently removes the lead from the <b>leads</b> table. Dependent rows (activities, assignments, visits, tasks, deals) may block the delete — the real database error will be shown if so.`, async () => {
       try { await leadService.deleteLead(d.id); closeDrawer(); toast('Lead deleted — re-read confirmed absence'); refresh(); }
       catch(err){ toast(esc(err.message)); } }); },
@@ -3218,6 +3430,7 @@ document.addEventListener('change', async e => {
     if (c === 'agentRole'){ await agentService.updateRole(id, t.value); toast('Role updated — verified (frontend hint; RLS enforces real permissions)'); }
     if (c === 'taskDone'){ await taskService.setStatus(id, t.checked ? 'Completed' : TASK_OPEN); toast(t.checked ? 'Task completed — verified' : 'Task reopened as Open — verified'); refresh(); }
     if (c === 'taskStatus'){ await taskService.setStatus(id, t.value); toast('Task status → ' + t.value + ' — verified'); refresh(); }
+    if (c === 'leadPropertyStatus'){ await leadPropertiesService.updateStatus(id, t.value); toast('Interest status updated' + (prodMode() ? ' — verified against Supabase' : '')); await Actions.openLead({ id: t.dataset.leadId }); }
   } catch(err){
     toast(esc((err && err.message) || 'Update failed'));   // exact database error — never swallowed
     refresh();                                             // reset the control to the persisted value
@@ -3387,6 +3600,28 @@ document.addEventListener('submit', async e => {
         if (check.unitNo !== fd.unitNo.trim()) throw new Error('Unit number verification failed — database returned "' + check.unitNo + '".');
       }
       closeModal(); toast('Inventory unit created' + (prodMode() ? ' — verified in Supabase' : '')); refresh();
+    });
+    return;
+  }
+  if (kind === 'leadProperty'){
+    await guardForm(f, async () => {
+      const leadId = f.dataset.leadId;
+      if (!fd.selection) throw new Error('Select a property or inventory unit to connect.');
+      const [selKind, selId] = String(fd.selection).split(':');
+      const data = { leadId, interestStatus: fd.interestStatus || 'Interested', notes: fd.notes || '' };
+      if (selKind === 'property') data.propertyId = selId; else data.inventoryUnitId = selId;
+      await leadPropertiesService.connect(data);
+      closeModal(); toast('Property connected to lead' + (prodMode() ? ' — verified in Supabase' : ''));
+      await Actions.openLead({ id: leadId });
+    });
+    return;
+  }
+  if (kind === 'leadPropertyNotes'){
+    await guardForm(f, async () => {
+      const id = f.dataset.id, leadId = f.dataset.leadId;
+      await leadPropertiesService.updateNotes(id, fd.notes || '');
+      closeModal(); toast('Notes updated' + (prodMode() ? ' — verified in Supabase' : ''));
+      await Actions.openLead({ id: leadId });
     });
     return;
   }
