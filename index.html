@@ -523,7 +523,7 @@ const EVENT_CATALOG = ['lead.created','lead.assigned','lead.scored','lead.status
    No 'Pending' anywhere in the application — UI uses DB terminology. */
 const TASK_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
 const TASK_OPEN = 'Open';
-const LEAD_PROPERTY_STATUSES = ['Interested', 'Shortlisted', 'Visit Scheduled', 'Visited', 'Negotiation', 'Rejected', 'Booked'];
+const LEAD_PROPERTY_STATUSES = ['Interested', 'Shortlisted', 'Visit Scheduled', 'Visited', 'Negotiation', 'Rejected', 'Booked', 'Sold'];
 const taskOpen = t => !!t && (t.status === 'Open' || t.status === 'In Progress');
 
 /* ============================== lead scoring (shared; prefers DB score when present) ============================== */
@@ -797,6 +797,7 @@ function seed(){
   ];
   return { organization, agents, projects, properties, inventory, leads, deals, visits, commissions, tasks, convos, notifications, marketing: structuredClone(MKT_PLANS),
     leadProperties: [],   // demo mirror of the lead_properties junction table — in-memory only, resets on refresh
+    dealSales: [],        // demo mirror of the deal_sales table — in-memory only, resets on refresh
     brokerageSettings,    // demo mirror of the brokerage_settings table — in-memory only, resets on refresh
     audit: [{ at:daysAgo(1), actor:'Vikram Khanna', action:'Deal stage changed', entity:'dl_06', details:'booking → agreement' },{ at:daysAgo(2), actor:'Sneha Reddy', action:'Lead assigned', entity:'ld_02', details:'assigned' }] };
 }
@@ -949,6 +950,38 @@ const demo = (function(){
       async markReceived(id){ await gate(); const c = mockDB.commissions.find(x=>x.id===id); c.received += c.outstanding; c.outstanding = 0;
         c.status='Received'; c.paymentDate = new Date().toISOString(); recordAudit('Commission changed', id, 'Received');
         EventBus.emit('commission.received', { entityId:id, amount:c.brokerage }); return clone(c); },
+    },
+    /* ---- deal_sales (demo mirror) — simulates the SAME lifecycle the RPC
+       performs server-side in production, but entirely in memory. Never used
+       in production mode. ---- */
+    saleService: {
+      async getSales(){ await gate(); return clone(mockDB.dealSales); },
+      async getByDeal(dealId){ await gate(); return clone(mockDB.dealSales.find(s => s.dealId === dealId) || null); },
+      async finalizeSale(dealId){ await gate();
+        const existing = mockDB.dealSales.find(s => s.dealId === dealId);
+        if (existing) return clone(existing);          // idempotent, exactly like the RPC
+        const deal = mockDB.deals.find(d => d.id === dealId);
+        if (!deal) throw new Error('This deal could not be found.');
+        if (deal.stage !== 'closed' && !pipelineService.stage(deal.stage).won) throw new Error('The deal must be in the Closed stage before it can be finalized.');
+        const comm = mockDB.commissions.find(c => c.dealId === dealId);
+        if (!comm) throw new Error('No commission record exists for this deal yet.');
+        if (comm.status !== 'Received') throw new Error('The commission for this deal must be marked Received before finalizing the sale.');
+        const hasProp = !!deal.propertyId, hasUnit = !!deal.unitId;
+        if (hasProp && hasUnit) throw new Error('This deal references both a property and an inventory unit — it must reference exactly one.');
+        if (!hasProp && !hasUnit) throw new Error('This deal has no property or inventory unit attached.');
+        if (hasUnit){ const u = mockDB.inventory.find(x => x.id === deal.unitId);
+          if (!u) throw new Error('The connected inventory unit could not be found.'); u.status = 'Sold'; }
+        if (hasProp){ const pr = mockDB.properties.find(x => x.id === deal.propertyId);
+          if (!pr) throw new Error('The connected property could not be found.'); pr.status = 'Sold'; }
+        if (deal.leadId) mockDB.leadProperties.filter(lp => lp.leadId === deal.leadId &&
+          ((hasProp && lp.propertyId === deal.propertyId) || (hasUnit && lp.inventoryUnitId === deal.unitId)))
+          .forEach(lp => { lp.interestStatus = 'Sold'; lp.updatedAt = new Date().toISOString(); });
+        const rec = { id:'ds_' + Date.now().toString(36), dealId, leadId:deal.leadId || null,
+          propertyId:deal.propertyId || null, inventoryUnitId:deal.unitId || null,
+          saleValue:deal.value || 0, finalizedAt:new Date().toISOString(), finalizedBy:'demo' };
+        mockDB.dealSales.unshift(rec);
+        recordAudit('Sale finalized', dealId, inr(deal.value || 0));
+        return clone(rec); },
     },
     notificationService: {
       _onChange: null,
@@ -1322,6 +1355,31 @@ const brokerageSettingsToRow = (s, orgId) => scrubBrokerageSettingsRow({
   tds_pct: s.tdsPct != null ? Number(s.tdsPct) : null,
   default_agent_split_pct: s.defaultAgentSplitPct != null ? Number(s.defaultAgentSplitPct) : null,
 }, { keepNull: true });
+/* ---- deal_sales: existing table, read-only from the frontend's perspective —
+   the only way a row is ever created is through the finalize_deal_sale RPC.
+   The frontend never inserts into this table directly. ---- */
+const fromDealSaleRow = r => ({
+  id: r.id, dealId: r.deal_id, leadId: r.lead_id || null, propertyId: r.property_id || null,
+  inventoryUnitId: r.inventory_unit_id || null, saleValue: r.sale_value ?? null,
+  finalizedAt: r.finalized_at || null, finalizedBy: r.finalized_by || null,
+});
+/* ---- finalize_deal_sale RPC error → friendly message. The RPC is the single
+   source of truth for the sale-finalization lifecycle; this only translates
+   its error text for the UI, it never re-implements the RPC's checks. ---- */
+const RPC_ERROR_MESSAGES = [
+  [/authenticat/i, 'You need to be signed in to finalize a sale.'],
+  [/agent profile/i, 'No active agent profile was found for your account.'],
+  [/deal not found/i, 'This deal could not be found.'],
+  [/deal.*closed|must be closed/i, 'The deal must be in the Closed stage before it can be finalized.'],
+  [/no commission/i, 'No commission record exists for this deal yet.'],
+  [/commission.*received/i, 'The commission for this deal must be marked Received before finalizing the sale.'],
+  [/both a property and inventory|cannot reference both/i, 'This deal references both a property and an inventory unit — it must reference exactly one.'],
+  [/no property or inventory|neither property nor inventory/i, 'This deal has no property or inventory unit attached.'],
+  [/property not found/i, 'The connected property could not be found.'],
+  [/inventory unit not found/i, 'The connected inventory unit could not be found.'],
+  [/already finalized|duplicate/i, 'This sale has already been finalized.'],
+];
+const friendlyRpcError = msg => (RPC_ERROR_MESSAGES.find(([re]) => re.test(msg || '')) || [null, msg || 'Finalizing the sale failed.'])[1];
 
 /* =====================================================================
    /remote — production Supabase implementations (RLS-scoped by design).
@@ -1586,6 +1644,23 @@ const R = {
       const rows = await upd('commissions', { id }, { status: 'Received' });
       if (!rows[0] || String(rows[0].status) !== 'Received') throw new Error('Commission status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
       return true;
+    },
+  },
+  /* ---- deal_sales + finalize_deal_sale RPC. The RPC is the ONLY operation
+     used to finalize a sale — the frontend never inserts deal_sales, never
+     sets a property/unit to Sold, and never writes lead_properties to Sold
+     on its own. Those are all done atomically inside the RPC. ---- */
+  dealSales: {
+    async list(){ return sel('deal_sales', { limit: 500 }); },
+    async getByDeal(dealId){ const rows = await sel('deal_sales', { eq: { deal_id: dealId } }); return rows[0] || null; },
+    async finalize(dealId){
+      const c = await client();
+      const { data, error } = await c.rpc('finalize_deal_sale', { p_deal_id: dealId });
+      if (error) throw new Error(friendlyRpcError(error.message));
+      // read-back: the RPC returns deal_sales.id — confirm the row is actually readable
+      const sale = await R.dealSales.getByDeal(dealId);
+      if (!sale) throw new Error('The sale RPC reported success but no deal_sales row could be read back — check the RLS SELECT policy on deal_sales.');
+      return { saleId: data || sale.id, sale };
     },
   },
   marketing: {
@@ -1905,6 +1980,21 @@ const commissionService = {
   preview(deal){ return brokerageCalc.forDeal(deal); },
   async markReceived(id){ return demoMode() ? demo.commissionService.markReceived(id) : R.commissions.markReceived(id); },
 };
+const saleService = {
+  async getSales(){ return demoMode() ? demo.saleService.getSales() : (await R.dealSales.list()).map(fromDealSaleRow); },
+  async getByDeal(dealId){
+    if (demoMode()) return demo.saleService.getByDeal(dealId);
+    const row = await R.dealSales.getByDeal(dealId);
+    return row ? fromDealSaleRow(row) : null;
+  },
+  /* Production: the finalize_deal_sale RPC does everything atomically.
+     The frontend never touches property/inventory/lead_properties/deal_sales itself. */
+  async finalizeSale(dealId){
+    if (demoMode()) return demo.saleService.finalizeSale(dealId);
+    const { sale } = await R.dealSales.finalize(dealId);
+    return fromDealSaleRow(sale);
+  },
+};
 const notificationService = {
   _onChange: null, _unread: 0,
   setChangeListener(cb){ this._onChange = cb; demo.notificationService.setChangeListener(cb); },
@@ -2014,6 +2104,13 @@ const TONE = {
 };
 const chip = (txt, tone) => `<span class="chip ${tone || TONE[txt] || 'c-gray'}">${esc(txt)}</span>`;
 const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineService.stage(stage).won ? 'c-green-d' : (stage === 'lost' || pipelineService.stage(stage).lost) ? 'c-gray' : ['token','booking','agreement','registration'].includes(stage) ? 'c-orange' : 'c-slate');
+/* ---- Sale lifecycle helpers. "Deal closed", "commission received" and
+   "sale finalized" are three DISTINCT states — a closed deal is NOT a sale.
+   A sale exists only when a deal_sales row exists. ---- */
+const dealIsClosed = d => !!d && (d.stage === 'closed' || pipelineService.stage(d.stage).won);
+const saleReady = (deal, commission, sale) => !sale && dealIsClosed(deal) && !!commission && commission.status === 'Received';
+const SOLD_ASSET_STATUSES = ['Sold'];
+const assetIsSold = a => !!a && SOLD_ASSET_STATUSES.includes(a.status);
 const scoreCell = l => { const total = leadScoringService.score(l); const temp = leadScoringService.tempOf(l);
   return `<div class="scorecell"><span class="s-num">${total}</span><span class="sbar"><i style="width:${total}%;background:${temp==='HOT'?'var(--red)':temp==='WARM'?'#C8922B':'#8A857C'}"></i></span>${chip(temp, temp === 'HOT' ? 'c-red' : temp === 'WARM' ? 'c-amber' : 'c-slate')}</div>`; };
 const avat = (name, sz=30) => `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${sz*.38}px">${esc(initials(name))}</span>`;
@@ -2096,7 +2193,7 @@ let renderSeq = 0;
 let brokerageEditMode = false;   // local UI toggle for the Brokerage defaults card — never persisted
 const NAV = [
   { group:'Command', items:[ {id:'overview',label:'Overview',ic:'overview'}, {id:'ai',label:'AI Analyst',ic:'ai'}, {id:'notifications',label:'Notifications',ic:'bell',badge:()=>notificationService.countUnread()} ] },
-  { group:'Sales', items:[ {id:'leads',label:'Leads',ic:'users'}, {id:'pipeline',label:'Pipeline',ic:'pipeline'}, {id:'deals',label:'Deals',ic:'briefcase'}, {id:'visits',label:'Site Visits',ic:'visit'} ] },
+  { group:'Sales', items:[ {id:'leads',label:'Leads',ic:'users'}, {id:'pipeline',label:'Pipeline',ic:'pipeline'}, {id:'deals',label:'Deals',ic:'briefcase'}, {id:'sales',label:'Sales',ic:'check'}, {id:'visits',label:'Site Visits',ic:'visit'} ] },
   { group:'Inventory', items:[ {id:'projects',label:'Projects',ic:'building'}, {id:'properties',label:'Properties',ic:'home'}, {id:'inventory',label:'Inventory',ic:'layers'} ] },
   { group:'Performance', items:[ {id:'agents',label:'Agents',ic:'agent'}, {id:'marketing',label:'Marketing',ic:'megaphone'}, {id:'commissions',label:'Commissions',ic:'percent'} ] },
   { group:'Operations', items:[ {id:'tasks',label:'Tasks',ic:'tasks'}, {id:'whatsapp',label:'WhatsApp',ic:'wa'}, {id:'automations',label:'Automations',ic:'zap'} ] },
@@ -2151,9 +2248,9 @@ function modal(title, body, footer){
   $('#modalWrap').classList.add('open');
 }
 const closeModal = () => { $('#modalWrap').classList.remove('open'); $('#modalWrap').innerHTML = ''; };
-function confirmBox(title, body, onYes){
+function confirmBox(title, body, onYes, yesLabel){
   modal(title, `<p style="color:var(--ink2)">${body}</p>`,
-    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn danger" id="cfmYes">Confirm</button>`);
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn danger" id="cfmYes">${esc(yesLabel || 'Confirm')}</button>`);
   $('#cfmYes').onclick = () => { closeModal(); onYes(); };
 }
 
@@ -2166,17 +2263,19 @@ function interestedPropertiesSection(l, list){
     const sub = isProp ? `${esc(item.config || '—')} · ${esc(item.locality || '—')}`
       : `${esc(item.config || (item.bhk ? item.bhk + ' BHK' : '—'))} · ${item.carpet ? item.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'}`;
     const price = inrFull(item.price) + (isProp && item.type === 'Rental' ? ' / month' : '');
+    const sold = ip.interestStatus === 'Sold' || assetIsSold(item);   // real DB state, never inferred from a closed deal
     const statusOpts = LEAD_PROPERTY_STATUSES.map(s => `<option ${ip.interestStatus === s ? 'selected' : ''}>${s}</option>`).join('');
-    return `<div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+    return `<div style="border:1px solid ${sold ? 'var(--green)' : 'var(--line)'};border-radius:10px;padding:12px 14px;margin-bottom:10px${sold ? ';background:var(--bg2)' : ''}">
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
-        <div><div class="cellstrong">${title}</div><div class="cellsub">${sub}</div><div class="cellsub" style="margin-top:2px;font-weight:600">${price}</div></div>
-        <select class="inp" style="height:28px;padding:0 6px;width:auto" data-change="leadPropertyStatus" data-id="${ip.id}" data-lead-id="${l.id}">${statusOpts}</select>
+        <div><div class="cellstrong">${title} ${sold ? chip('Sold', 'c-green-d') : ''}</div><div class="cellsub">${sub}</div><div class="cellsub" style="margin-top:2px;font-weight:600">${price}</div></div>
+        ${sold ? `<span>${chip(ip.interestStatus)}</span>`
+          : `<select class="inp" style="height:28px;padding:0 6px;width:auto" data-change="leadPropertyStatus" data-id="${ip.id}" data-lead-id="${l.id}">${statusOpts}</select>`}
       </div>
       ${ip.notes ? `<p style="margin-top:8px;font-size:12px;color:var(--ink2)">${esc(ip.notes)}</p>` : ''}
       <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap">
         <button class="btn sm ghost" data-action="${isProp ? 'openProperty' : 'openUnit'}" data-id="${item.id}">${icon('external',13)} ${isProp ? 'View property' : 'View unit'}</button>
-        <button class="btn sm ghost" data-action="editLeadPropertyNotes" data-id="${ip.id}" data-lead-id="${l.id}" data-notes="${esc(ip.notes || '')}">${icon('edit',13)} Notes</button>
-        <button class="btn sm ghost" style="color:var(--red)" data-action="removeLeadProperty" data-id="${ip.id}" data-lead-id="${l.id}">${icon('x',13)} Remove</button>
+        ${sold ? '' : `<button class="btn sm ghost" data-action="editLeadPropertyNotes" data-id="${ip.id}" data-lead-id="${l.id}" data-notes="${esc(ip.notes || '')}">${icon('edit',13)} Notes</button>
+        <button class="btn sm ghost" style="color:var(--red)" data-action="removeLeadProperty" data-id="${ip.id}" data-lead-id="${l.id}">${icon('x',13)} Remove</button>`}
       </div>
     </div>`;
   };
@@ -2242,7 +2341,28 @@ function dealDrawer(d, ctx){
   const b = commissionService.preview(d);
   const nm = nmOf(ctx.agents);
   const stageOpts = pipelineService.stages().map(s => `<option value="${s.id}" ${d.stage === s.id ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
-  openDrawer(`${esc(d.buyer)} &nbsp;${stageChip(d.stage)}`,
+  const sale = ctx.sale || null, comm = ctx.commission || null;
+  const asset = ctx.unit ? { label:'Tower ' + esc(ctx.unit.tower) + ' · ' + esc(ctx.unit.unitNo) + ' · ' + esc(ctx.unit.config), status:ctx.unit.status, kind:'unit', id:ctx.unit.id }
+    : ctx.property ? { label:esc(ctx.property.title) + ' · ' + esc(ctx.property.locality), status:ctx.property.status, kind:'property', id:ctx.property.id } : null;
+  const saleSection = `<div class="d-sec"><div class="st">Sale status</div>
+      <div class="kv"><span class="k">Deal stage</span><span class="v">${stageChip(d.stage)}</span></div>
+      <div class="kv"><span class="k">${ctx.unit ? 'Inventory unit' : ctx.property ? 'Property' : 'Asset'}</span><span class="v">${asset
+        ? `${asset.label} ${chip(asset.status)}` : '<span style="color:var(--ink3)">None attached</span>'}</span></div>
+      <div class="kv"><span class="k">Lead</span><span class="v">${ctx.lead ? `<span class="b-link" data-action="openLead" data-id="${ctx.lead.id}">${esc(ctx.lead.name)}</span>` : '—'}</span></div>
+      <div class="kv"><span class="k">Deal value</span><span class="v">${inrFull(d.value)}</span></div>
+      <div class="kv"><span class="k">Commission</span><span class="v">${comm ? inrFull(comm.brokerage) : '—'}</span></div>
+      <div class="kv"><span class="k">Commission status</span><span class="v">${comm ? chip(comm.status) : '<span style="color:var(--ink3)">No commission record</span>'}</span></div>
+      <div class="kv"><span class="k">Sale status</span><span class="v">${sale ? chip('Finalized', 'c-green-d') : chip('Not Finalized', 'c-slate')}</span></div>
+      ${sale ? `<div class="kv"><span class="k">Finalized on</span><span class="v">${fmtDT(sale.finalizedAt)}</span></div>
+        <p class="fhint" style="margin-top:10px">Sale finalized — the ${sale.inventoryUnitId ? 'inventory unit' : 'property'} is marked Sold and the lead's relationship reads Sold. Recorded in <span class="mono">deal_sales</span>.</p>`
+      : saleReady(d, comm, sale) ? `<div style="margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)">
+          <div class="cellstrong">Ready to Finalize Sale</div>
+          <div class="cellsub" style="margin-top:2px">Deal is Closed and the commission is Received.</div>
+          <button class="btn sm" style="margin-top:10px" data-action="finalizeSale" data-id="${d.id}">${icon('check',13)} Finalize Sale</button>
+        </div>`
+      : `<p class="fhint" style="margin-top:10px">A sale can be finalized once the deal is <b>Closed</b> and its commission is <b>Received</b>. A closed deal is not a sale on its own.</p>`}
+    </div>`;
+  openDrawer(`${esc(d.buyer)} &nbsp;${stageChip(d.stage)}${sale ? ' ' + chip('Sold', 'c-green-d') : ''}`,
     `<div class="d-sec"><div class="st">Deal value &amp; brokerage preview <span class="mono" style="font-weight:400;color:var(--ink3)">(commissionService)</span></div>
       <div class="kv"><span class="k">Gross deal value</span><span class="v">${inrFull(d.value)}</span></div>
       <div class="kv"><span class="k">Brokerage</span><span class="v">${d.brokerageType === 'Fixed' ? inrFull(d.fixedAmt) + ' (fixed)' : (d.brokeragePct || 0) + '%'} → ${inrFull(b.brokerage)}</span></div>
@@ -2263,16 +2383,19 @@ function dealDrawer(d, ctx){
       <div class="kv"><span class="k">Expected close</span><span class="v">${fmtDate(d.expectedClose)}</span></div>
       ${d.closedAt ? `<div class="kv"><span class="k">Closed</span><span class="v">${fmtDate(d.closedAt)}</span></div>` : ''}
     </div>
+    ${saleSection}
     <div class="d-sec"><div class="st">Move stage (persists to deals.stage)</div>
-      <select class="inp" data-change="dealStage" data-id="${d.id}">${stageOpts}</select>
+      ${sale ? `<p class="fhint">Stage changes are locked — this sale is finalized in <span class="mono">deal_sales</span>.</p>`
+        : `<select class="inp" data-change="dealStage" data-id="${d.id}">${stageOpts}</select>`}
     </div>`);
 }
 function interestedLeadsSection(list, nm){
   if (!list || !list.length) return '';
+  // Relationships are kept after a sale as historical record — never deleted.
   return `<div class="d-sec"><div class="st">Interested Leads (${list.length})</div>
     ${list.filter(ip => ip.lead).map(ip => `<div class="kv" style="cursor:pointer" data-action="openLead" data-id="${ip.lead.id}">
         <span class="k">${esc(ip.lead.name)}</span>
-        <span class="v">${chip(ip.interestStatus)} <span style="color:var(--ink3);font-size:11.5px">${esc(nm(ip.lead.agentId))}</span></span>
+        <span class="v">${ip.interestStatus === 'Sold' ? chip('Sold', 'c-green-d') : chip(ip.interestStatus)} <span style="color:var(--ink3);font-size:11.5px">${esc(nm(ip.lead.agentId))}</span></span>
       </div>`).join('')}
   </div>`;
 }
@@ -2306,7 +2429,8 @@ function unitDrawer(u, project, agents, interestedLeads = []){
     </div>` : ''}
     ${u.photos ? `<img src="https://picsum.photos/seed/${encodeURIComponent(String(u.photos))}/640/300.jpg" style="width:100%;border-radius:10px;margin-bottom:10px" alt="">` : ''}
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${['Available','Hold'].includes(u.status) ? `<button class="btn sm ghost" data-action="holdUnit" data-id="${u.id}">${icon('clock',13)} Put on hold</button>` : ''}
+      ${assetIsSold(u) ? `<span class="fhint">This unit is <b>Sold</b> in the database — hold/book actions are disabled.</span>`
+        : ['Available','Hold'].includes(u.status) ? `<button class="btn sm ghost" data-action="holdUnit" data-id="${u.id}">${icon('clock',13)} Put on hold</button>` : ''}
       <button class="btn sm ghost" data-action="shareUnit" data-id="${u.id}">${icon('wa',13)} Share on WhatsApp</button>
     </div>
     ${interestedLeadsSection(interestedLeads, nm)}`);
@@ -2346,7 +2470,8 @@ function propertyDrawer(x, agents, interestedLeads = []){
       <div class="kv"><span class="k">Listed by</span><span class="v">${esc(x.listedBy)}${x.exclusive ? ' · <b style="color:var(--accent-ink)">Exclusive</b>' : ''}</span></div>
       <div class="kv"><span class="k">Listing agent</span><span class="v">${esc(nm(x.agent))}</span></div>
     </div>
-    <button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>
+    ${assetIsSold(x) ? `<p class="fhint">This listing is <b>Sold</b> in the database — it is excluded from available inventory.</p>`
+      : `<button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>`}
     ${interestedLeadsSection(interestedLeads, nm)}`);
 }
 
@@ -2738,10 +2863,11 @@ PAGES.pipeline = { async render(root, p, seq){
 }};
 
 PAGES.deals = { async render(root, p, seq){
-  const [deals, projects, properties, agents] = await Promise.all([dealService.getDeals(), projectService.getProjects(), propertyService.getProperties(), agentService.getAgents()]);
+  const [deals, projects, properties, agents, sales] = await Promise.all([dealService.getDeals(), projectService.getProjects(), propertyService.getProperties(), agentService.getAgents(), saleService.getSales().catch(() => [])]);
   const unitIds = [...new Set(deals.filter(d => d.unitId).map(d => d.unitId))];
   const units = unitIds.length ? await inventoryService.getUnitsByIds(unitIds) : [];
   if (seq !== renderSeq) return;
+  const saleByDeal = Object.fromEntries(sales.map(s => [s.dealId, s]));
   const agentNm = nmOf(agents), projNm = id => (byId(projects, id) || {name:'Resale listing'}).name;
   const show = p.filter === 'stale' ? deals.filter(d => pipelineService.activeIds().includes(d.stage) && hoursSince(d.updatedAt) > 21*24)
     : p.filter === 'closed' ? deals.filter(d => d.stage === 'closed' || pipelineService.stage(d.stage).won) : deals;
@@ -2759,7 +2885,7 @@ PAGES.deals = { async render(root, p, seq){
       ${card('Brokerage at stake by stage', charts.hbars(brokerageStake), { sub: 'active pipeline · per-deal rates' })}
     </div>
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
-      <thead><tr><th>Deal</th><th>Unit / Listing</th><th class="num">Value</th><th>Brokerage</th><th>Stage</th><th>Agent</th><th class="num">Updated</th><th class="num">Expected close</th></tr></thead>
+      <thead><tr><th>Deal</th><th>Unit / Listing</th><th class="num">Value</th><th>Brokerage</th><th>Stage</th><th>Sale</th><th>Agent</th><th class="num">Updated</th><th class="num">Expected close</th></tr></thead>
       <tbody>${show.map(d => { const u = byId(units, d.unitId), pr = byId(properties, d.propertyId);
         const br = d.brokerageType === 'Fixed' ? inr(d.fixedAmt) : inr(commissionService.preview(d).brokerage) + ' · ' + (d.brokeragePct || 0) + '%';
         return `<tr data-action="openDeal" data-id="${d.id}">
@@ -2767,9 +2893,48 @@ PAGES.deals = { async render(root, p, seq){
         <td>${u ? 'Tower ' + esc(u.tower) + ' · ' + esc(u.unitNo) : pr ? esc(pr.title) + (pr.locality ? ' · ' + esc(pr.locality) : '') : esc(projNm(d.projectId))}</td>
         <td class="num">${inr(d.value)}</td><td>${br}</td>
         <td>${stageChip(d.stage)}${hoursSince(d.updatedAt) > 21*24 && pipelineService.activeIds().includes(d.stage) ? ' <span class="chip c-red">stale</span>' : ''}</td>
+        <td>${saleByDeal[d.id] ? chip('Finalized', 'c-green-d') : '<span class="cellsub">—</span>'}</td>
         <td>${esc(agentNm(d.agentId))}</td>
         <td class="num">${timeAgo(d.updatedAt)}</td><td class="num">${fmtDate(d.expectedClose)}</td></tr>`; }).join('')}</tbody></table></div>
       ${show.length ? '' : empty('No deals found', 'Adjust filters to see more.')}</div>`;
+}};
+
+/* deal_sales is the source of truth for finalized sales — a closed deal is NOT a sale. */
+PAGES.sales = { async render(root, p, seq){
+  const [sales, deals, leads, properties, agents, commissions] = await Promise.all([
+    saleService.getSales(), dealService.getDeals(), leadService.getLeads(),
+    propertyService.getProperties(), agentService.getAgents(), commissionService.getCommissions()]);
+  const unitIds = [...new Set(sales.filter(s => s.inventoryUnitId).map(s => s.inventoryUnitId))];
+  const units = unitIds.length ? await inventoryService.getUnitsByIds(unitIds) : [];
+  if (seq !== renderSeq) return;
+  const agentNm = nmOf(agents);
+  const rows = sales.map(s => ({ s, deal: byId(deals, s.dealId) || null, lead: s.leadId ? byId(leads, s.leadId) : null,
+    unit: s.inventoryUnitId ? byId(units, s.inventoryUnitId) : null,
+    property: s.propertyId ? byId(properties, s.propertyId) : null,
+    commission: commissions.find(c => c.dealId === s.dealId) || null }))
+    .sort((a, b) => new Date(b.s.finalizedAt || 0) - new Date(a.s.finalizedAt || 0));
+  const totalValue = rows.reduce((a, r) => a + (r.s.saleValue || 0), 0);
+  const readyCount = deals.filter(d => dealIsClosed(d) && !sales.some(s => s.dealId === d.id)
+    && (commissions.find(c => c.dealId === d.id) || {}).status === 'Received').length;
+  const closedNotFinalized = deals.filter(d => dealIsClosed(d) && !sales.some(s => s.dealId === d.id)).length;
+  root.innerHTML = `
+    ${pageHead('Sales', 'Finalized Sales', `Sourced from the <span class="mono">deal_sales</span> table. A deal being Closed does not make it a sale — a sale exists only after it is finalized via <span class="mono">finalize_deal_sale</span>.`)}
+    <div class="grid g4">
+      ${[['Finalized sales', String(rows.length)], ['Total sale value', inr(totalValue)], ['Ready to finalize', String(readyCount)], ['Closed, not finalized', String(closedNotFinalized)]]
+        .map(([k, v]) => `<div class="card" style="padding:14px 16px"><div class="k-label">${k}</div><div class="k-val" style="font-size:21px">${v}</div></div>`).join('')}
+    </div>
+    <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl" style="min-width:980px">
+      <thead><tr><th>Sale</th><th>Buyer / Lead</th><th>Property / Inventory Unit</th><th class="num">Sale value</th><th>Agent</th><th class="num">Finalized</th><th>Commission</th></tr></thead>
+      <tbody>${rows.map(({ s, deal, lead, unit, property, commission }) => `<tr ${deal ? `data-action="openDeal" data-id="${deal.id}"` : ''}>
+        <td><div class="cellstrong">${esc(String(s.id).slice(0,8))} ${chip('Finalized', 'c-green-d')}</div><div class="cellsub">deal ${esc(String(s.dealId).slice(0,8))}</div></td>
+        <td><div class="cellstrong">${esc(deal?.buyer || '—')}</div><div class="cellsub">${lead ? esc(lead.name) : 'No lead linked'}</div></td>
+        <td>${unit ? `Tower ${esc(unit.tower)} · ${esc(unit.unitNo)} <span class="cellsub">inventory unit</span>`
+          : property ? `${esc(property.title)} <span class="cellsub">property</span>` : '<span class="cellsub">—</span>'}</td>
+        <td class="num">${inr(s.saleValue ?? deal?.value)}</td>
+        <td>${esc(agentNm(deal?.agentId))}</td>
+        <td class="num">${fmtDate(s.finalizedAt)}</td>
+        <td>${commission ? chip(commission.status) : '<span class="cellsub">—</span>'}</td></tr>`).join('')}</tbody></table></div>
+      ${rows.length ? '' : empty('No finalized sales yet', 'Close a deal, mark its commission Received, then finalize the sale from the deal drawer.')}</div>`;
 }};
 
 PAGES.visits = { async render(root, p, seq){
@@ -2866,12 +3031,12 @@ PAGES.properties = { async render(root, p, seq){
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents);
   root.innerHTML = `
-    ${pageHead('Inventory', 'Properties', `Resale, rental and commercial listings.`, `
+    ${pageHead('Inventory', 'Properties', `${props.filter(x => !assetIsSold(x)).length} of ${props.length} listings still available · statuses read live from the <span class="mono">properties</span> table.`, `
       <button class="btn" data-action="newProperty">${icon('plus',14)} New property</button>`)}
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
       <thead><tr><th>Listing</th><th>Locality</th><th class="num">Carpet</th><th class="num">Price</th><th>Status</th><th>Owner / Listed by</th><th>Agent</th><th class="num">Rate</th></tr></thead>
-      <tbody>${props.map(x => `<tr data-action="openProperty" data-id="${x.id}">
-        <td><div class="cellstrong">${esc(x.title)} · ${esc(x.config)}</div><div class="cellsub">${esc(x.type)} · floor ${esc(x.floor)} · ${esc(x.furnishing)}</div></td>
+      <tbody>${props.map(x => `<tr data-action="openProperty" data-id="${x.id}"${assetIsSold(x) ? ' style="opacity:.72"' : ''}>
+        <td><div class="cellstrong">${esc(x.title)} · ${esc(x.config)}${assetIsSold(x) ? ' ' + chip('Sold', 'c-green-d') : ''}</div><div class="cellsub">${esc(x.type)} · floor ${esc(x.floor)} · ${esc(x.furnishing)}</div></td>
         <td>${esc(x.locality)}${x.city ? ', ' + esc(x.city) : ''}</td>
         <td class="num">${x.carpet ? x.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'}</td>
         <td class="num">${inr(x.price)}${x.type === 'Rental' ? '/mo' : ''}</td>
@@ -2928,15 +3093,15 @@ PAGES.inventory = { async render(root, p, seq){
     } else {
       body.innerHTML = `<div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
         <thead><tr><th>Unit</th><th>Config</th><th class="num">Carpet</th><th>Facing</th><th class="num">Price</th><th class="num">Rate</th><th>Status</th><th>Agent</th></tr></thead>
-        <tbody>${inv.map(u => `<tr data-action="openUnit" data-id="${u.id}">
-          <td><div class="cellstrong">T${esc(u.tower)} · ${esc(u.unitNo)}</div><div class="cellsub">Floor ${u.floor} of ${u.totalFloors}</div></td>
+        <tbody>${inv.map(u => `<tr data-action="openUnit" data-id="${u.id}"${assetIsSold(u) ? ' style="opacity:.72"' : ''}>
+          <td><div class="cellstrong">T${esc(u.tower)} · ${esc(u.unitNo)}${assetIsSold(u) ? ' ' + chip('Sold', 'c-green-d') : ''}</div><div class="cellsub">Floor ${u.floor} of ${u.totalFloors}</div></td>
           <td>${esc(u.config)}${u.exclusive ? ' <span class="chip c-teal">Excl.</span>' : ''}</td>
           <td class="num">${u.carpet.toLocaleString('en-IN')}</td><td>${esc(u.facing)}</td>
           <td class="num">${inr(u.price)}</td><td class="num">${psf(u.rate)}</td>
           <td>${chip(u.status)}</td><td>${esc(agentNm(u.listingAgent))}</td></tr>`).join('')}</tbody></table></div>
         ${inv.length ? '' : empty('No units match', 'Clear the status filter.')}</div>`;
     }
-    $('#invCount').textContent = inv.length + ' units' + (statusF ? ' · ' + statusF : '');
+    $('#invCount').textContent = inv.length + ' units' + (statusF ? ' · ' + statusF : ' · ' + inv.filter(u => !assetIsSold(u)).length + ' not sold');
   };
   $('#invStatus').addEventListener('change', draw);
   $('#invPrj').addEventListener('change', e => go('inventory', { project:e.target.value, view }));
@@ -3029,8 +3194,9 @@ PAGES.marketing = { async render(root, p, seq){
 }};
 
 PAGES.commissions = { async render(root, p, seq){
-  const [commissions, deals, agents] = await Promise.all([commissionService.getCommissions(), dealService.getDeals(), agentService.getAgents()]);
+  const [commissions, deals, agents, sales] = await Promise.all([commissionService.getCommissions(), dealService.getDeals(), agentService.getAgents(), saleService.getSales().catch(() => [])]);
   if (seq !== renderSeq) return;
+  const saleByDeal = Object.fromEntries(sales.map(s => [s.dealId, s]));
   const agentNm = nmOf(agents);
   const t = commissions.reduce((a,c) => ({ br:a.br+(c.brokerage||0), rec:a.rec+(c.received||0), out:a.out+(c.outstanding||0), gst:a.gst+(c.gst||0), tds:a.tds+(c.tds||0) }), {br:0,rec:0,out:0,gst:0,tds:0});
   const recDn = charts.donut([{ label:'Received', value: Math.round(t.rec), color:'#1F6B4D', tip: inr(t.rec) }, { label:'Outstanding', value: Math.round(t.out), color:'#C8922B', tip: inr(t.out) }], 138, 16, { v: inr(t.br), l: 'brokerage' });
@@ -3057,7 +3223,10 @@ PAGES.commissions = { async render(root, p, seq){
         <td class="num">${c.cpPayout ? inr(c.cpPayout) : '—'}</td><td class="num">${inr(c.agentSplit)}</td><td class="num">${inr(c.houseShare)}</td>
         <td class="num">${inr(c.received)}</td><td class="num ${c.outstanding ? 'ovd' : ''}">${inr(c.outstanding)}</td>
         <td>${chip(c.status)}</td>
-        <td>${c.outstanding ? `<button class="btn sm ghost" data-action="markReceived" data-id="${c.id}">Mark received</button>` : `<span class="cellsub">${fmtDate(c.paymentDate)}</span>`}</td></tr>`; }).join('')}</tbody></table></div>
+        <td>${c.outstanding ? `<button class="btn sm ghost" data-action="markReceived" data-id="${c.id}">Mark received</button>`
+          : saleByDeal[c.dealId] ? chip('Sale finalized', 'c-green-d')
+          : saleReady(d, c, null) ? `<button class="btn sm ghost" data-action="finalizeSale" data-id="${c.dealId}">Finalize sale</button>`
+          : `<span class="cellsub">${fmtDate(c.paymentDate)}</span>`}</td></tr>`; }).join('')}</tbody></table></div>
       ${commissions.length ? '' : empty('No commissions found', 'Commissions appear as deals reach token and beyond.')}</div>`;
 }};
 
@@ -3435,12 +3604,17 @@ const Actions = {
   async openDeal(d){
     const [deal, agents] = await Promise.all([dealService.getDeal(d.id), agentService.getAgents()]);
     if (!deal) return;
-    const [project, unit, property] = await Promise.all([
+    // A deal references EITHER a property OR an inventory unit — never both, and they are not interchangeable.
+    const [project, unit, property, sale, commissions, lead] = await Promise.all([
       deal.projectId ? projectService.getProject(deal.projectId) : Promise.resolve(null),
       deal.unitId ? inventoryService.getUnit(deal.unitId) : Promise.resolve(null),
       deal.propertyId ? propertyService.getProperty(deal.propertyId) : Promise.resolve(null),
+      saleService.getByDeal(d.id).catch(() => null),
+      commissionService.getCommissions().catch(() => []),
+      deal.leadId ? leadService.getLead(deal.leadId).catch(() => null) : Promise.resolve(null),
     ]);
-    dealDrawer(deal, { project, unit, property, agents });
+    const commission = commissions.find(c => c.dealId === deal.id) || null;
+    dealDrawer(deal, { project, unit, property, agents, sale, commission, lead });
   },
   async openUnit(d){
     const [unit, agents] = await Promise.all([inventoryService.getUnit(d.id), agentService.getAgents()]);
@@ -3489,12 +3663,36 @@ const Actions = {
       try { await leadService.deleteLead(d.id); closeDrawer(); toast('Lead deleted — re-read confirmed absence'); refresh(); }
       catch(err){ toast(esc(err.message)); } }); },
   holdUnit(d){ confirmBox('Put this unit on hold?', 'Status becomes <b>Hold</b> via inventoryService → inventory_units.status under RLS, and the stored value is verified.', async () => {
-      try { await inventoryService.setUnitStatus(d.id, 'Hold'); closeDrawer(); toast('Unit placed on hold — verified'); refresh(); }
+      try {
+        const u = await inventoryService.getUnit(d.id);          // re-read real DB state before mutating
+        if (assetIsSold(u)) throw new Error('This unit is Sold — it cannot be put back on hold.');
+        await inventoryService.setUnitStatus(d.id, 'Hold'); closeDrawer(); toast('Unit placed on hold — verified'); refresh(); }
       catch(err){ toast(esc(err.message)); } }); },
   shareUnit(d){ toast('Unit shared to WhatsApp thread (queued — provider not connected)'); },
   markReceived(d){ confirmBox('Mark commission received?', 'Inserts a <b>commission_payments</b> row for the outstanding amount — the single source of truth for collections — then verifies the status write.', async () => {
-      try { await commissionService.markReceived(d.id); toast('Commission marked received — verified'); refresh(); }
+      try {
+        await commissionService.markReceived(d.id);
+        toast('Commission marked received — verified');
+        refresh();
+        // Marking received NEVER auto-finalizes the sale — the user must explicitly confirm.
+        const [commissions, deals] = await Promise.all([commissionService.getCommissions(), dealService.getDeals()]);
+        const comm = commissions.find(c => c.id === d.id);
+        const deal = comm ? byId(deals, comm.dealId) : null;
+        if (!deal) return;
+        const sale = await saleService.getByDeal(deal.id).catch(() => null);
+        if (saleReady(deal, comm, sale)) Actions.finalizeSale({ id: deal.id });
+      }
       catch(err){ toast(esc(err.message)); } }); },
+  finalizeSale(d){ confirmBox('Finalize this sale?',
+      'This will mark the connected property/inventory unit as <b>Sold</b> and update the lead\'s property relationship.<br><br>This action cannot be undone.', async () => {
+      try {
+        // Production runs the finalize_deal_sale RPC — one atomic server-side operation.
+        await saleService.finalizeSale(d.id);
+        toast('Sale finalized' + (prodMode() ? ' — verified in Supabase' : ''));
+        refresh();                       // re-reads deals, commissions, properties, inventory, lead_properties and sales from the database
+        await Actions.openDeal({ id: d.id });
+      }
+      catch(err){ toast(esc(err.message)); } }, 'Finalize Sale'); },
   async completeVisit(d){ const v = await siteVisitService.getVisit(d.id); if (v) completeVisitModal(v); },
   async waOpen(d){ try { await communicationService.markRead(d.id); } catch(e){ toast(esc(e.message)); } renderBadges(); go('whatsapp', { convo:d.id }); },
   async waForLead(d){ const c = await communicationService.getConversationByLead(d.id);
