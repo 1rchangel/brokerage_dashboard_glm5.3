@@ -471,21 +471,23 @@ const brokerageCalc = {
 };
 
 /* ============================== pipeline (shared; loads pipeline_stages in production) ============================== */
-const DEFAULT_STAGES = [   /* DEMO-ONLY — production always loads pipeline_stages and FAILS LOUDLY if it cannot */
-  { id:'new',            label:'New Lead',              prob:0.03 },
-  { id:'contacted',      label:'Contacted',             prob:0.06 },
-  { id:'qualified',      label:'Qualified',             prob:0.10 },
-  { id:'shortlisted',    label:'Property Shortlisted',  prob:0.15 },
-  { id:'visit_scheduled',label:'Site Visit Scheduled',  prob:0.20 },
-  { id:'visit_done',     label:'Site Visit Completed',  prob:0.25 },
-  { id:'interested',     label:'Interested',            prob:0.32 },
-  { id:'negotiation',    label:'Negotiation',           prob:0.45 },
-  { id:'token',          label:'Token / EOI',           prob:0.65 },
-  { id:'booking',        label:'Booking',               prob:0.80 },
-  { id:'agreement',      label:'Agreement',             prob:0.90 },
-  { id:'registration',   label:'Registration',          prob:0.95 },
-  { id:'closed',         label:'Closed',                prob:1 },
-  { id:'lost',           label:'Lost',                  prob:0 },
+const DEFAULT_STAGES = [   /* DEMO-ONLY — production always loads pipeline_stages and FAILS LOUDLY if it cannot.
+  Shape mirrors the mapped production record (slug/sort/won/lost) so pipelineService.stage()
+  resolves identically in both modes. */
+  { id:'new',            slug:'new',             sort:1,  label:'New Lead',              prob:0.03 },
+  { id:'contacted',      slug:'contacted',       sort:2,  label:'Contacted',             prob:0.06 },
+  { id:'qualified',      slug:'qualified',       sort:3,  label:'Qualified',             prob:0.10 },
+  { id:'shortlisted',    slug:'shortlisted',     sort:4,  label:'Property Shortlisted',  prob:0.15 },
+  { id:'visit_scheduled',slug:'visit_scheduled', sort:5,  label:'Site Visit Scheduled',  prob:0.20 },
+  { id:'visit_done',     slug:'visit_done',      sort:6,  label:'Site Visit Completed',  prob:0.25 },
+  { id:'interested',     slug:'interested',      sort:7,  label:'Interested',            prob:0.32 },
+  { id:'negotiation',    slug:'negotiation',     sort:8,  label:'Negotiation',           prob:0.45 },
+  { id:'token',          slug:'token',           sort:9,  label:'Token / EOI',           prob:0.65 },
+  { id:'booking',        slug:'booking',         sort:10, label:'Booking',               prob:0.80 },
+  { id:'agreement',      slug:'agreement',       sort:11, label:'Agreement',             prob:0.90 },
+  { id:'registration',   slug:'registration',    sort:12, label:'Registration',          prob:0.95 },
+  { id:'closed',         slug:'closed',          sort:13, label:'Closed',                prob:1, won:true },
+  { id:'lost',           slug:'lost',            sort:14, label:'Lost',                  prob:0, lost:true },
 ];
 const pipelineService = {
   _stages: DEFAULT_STAGES.map(s => ({...s})),
@@ -495,24 +497,50 @@ const pipelineService = {
     const rows = await sel('pipeline_stages', { limit: 50 });
     if (!rows || !rows.length) throw new Error('pipeline_stages returned no rows — production refuses to guess stage IDs.');
     const mapped = rows.map(r => {
-      const prob = val(r, ['probability','win_probability','win_prob'], 0) || 0;
-      return { id: r.id, label: val(r, ['label','name','title'], String(r.id)),
-        prob: prob > 1 ? prob / 100 : prob,
-        won: !!val(r, ['is_won','won','is_terminal_won'], false),
-        lost: !!val(r, ['is_lost','lost'], false) };
-    }).sort((a,b) => (a.sort ?? 0) - (b.sort ?? 0));
+      /* probability is numeric in the DB. It may be stored either as a
+         fraction (0.5) or as a percentage (50). Normalise to a 0–1 fraction
+         exactly once here so every consumer multiplies by the same scale —
+         this is what prevents 50% being read as 0.5% or 5000%. */
+      const raw = Number(val(r, ['probability','win_probability','win_prob'], 0)) || 0;
+      const prob = Math.min(1, Math.max(0, raw > 1 ? raw / 100 : raw));
+      const slug = String(val(r, ['slug','key','code'], '') || '').toLowerCase();
+      const label = val(r, ['label','name','title'], String(r.id));
+      return { id: r.id, label, slug, prob,
+        sort: Number(val(r, ['sort_order','position','sort','display_order','step'], 0)) || 0,
+        won: !!val(r, ['is_won','won','is_terminal_won'], false) || /^(closed|won|closed won)$/i.test(slug || label),
+        lost: !!val(r, ['is_lost','lost'], false) || /^(lost|closed lost)$/i.test(slug || label) };
+    }).sort((a,b) => a.sort - b.sort);      // sort_order is now actually mapped, so this orders correctly
     this._stages = mapped;
     this._loaded = true;
   },
   stages(){ return this._stages.map(s => ({...s})); },
-  stage(id){ return this._stages.find(s => s.id === id) || { id, label: String(id), prob: 0 }; },
-  activeIds(){ return this._stages.filter(s => !s.won && !s.lost && !['closed','lost'].includes(s.id)).map(s => s.id); },
+  /* Resolve a stage reference to its real pipeline_stages record. Deals and
+     leads store stage_id (a UUID in production), but older/demo records and
+     some UI paths carry a slug or label instead. Matching on all three is
+     what makes probability resolve in production — an unmatched stage used
+     to silently fall through to prob: 0, zeroing the weighted pipeline. */
+  stage(id){
+    if (id == null) return { id, label: '—', prob: 0 };
+    const key = String(id).toLowerCase();
+    return this._stages.find(s => s.id === id)
+      || this._stages.find(s => String(s.id).toLowerCase() === key)
+      || this._stages.find(s => s.slug && s.slug === key)
+      || this._stages.find(s => String(s.label).toLowerCase() === key)
+      || { id, label: String(id), prob: 0 };
+  },
+  activeIds(){ return this._stages.filter(s => !s.won && !s.lost).map(s => s.id); },
   idx(id){ return this._stages.findIndex(s => s.id === id); },
   move(id, dir){ const i = this._stages.findIndex(s => s.id === id); const j = i + dir;
     if (j < 3 || j > this._stages.length - 3 || i < 0) return;
     const [s] = this._stages.splice(i,1); this._stages.splice(j,0,s); },
   reset(){ this._stages = DEFAULT_STAGES.map(s => ({...s})); },
 };
+/* A deal is "committed" (booking onward) when its stage's own stored probability
+   clears the booking threshold, or the stage is terminal-won. Derived from
+   pipeline_stages.probability so it works with real UUID stage ids — the old
+   hardcoded slug list ('booking','agreement',…) never matched in production. */
+const BOOKING_PROB_THRESHOLD = 0.8;
+const stageIsCommitted = id => { const s = pipelineService.stage(id); return !!s.won || (s.prob || 0) >= BOOKING_PROB_THRESHOLD; };
 const EVENT_CATALOG = ['lead.created','lead.assigned','lead.scored','lead.status_changed','lead.followup_due','lead.followup_overdue',
   'site_visit.created','site_visit.confirmed','site_visit.completed','deal.created','deal.stage_changed','deal.won','deal.lost',
   'commission.created','commission.received','message.sent','inventory.hold','task.completed'];
@@ -546,7 +574,7 @@ const leadScoringService = {
   score(l){ return l && l.dbScore != null ? l.dbScore : this.breakdown(l).total; },
   temperature(total){ return total >= 75 ? 'HOT' : total >= 45 ? 'WARM' : 'COLD'; },
   tempOf(l){ return String(l?.dbTemperature || this.temperature(this.score(l))).toUpperCase(); },
-  silentHot(leads){ return leads.filter(l => this.score(l) >= 70 && !['closed','lost'].includes(l.stage) && pipelineService.activeIds().includes(l.stage) && hoursSince(l.lastActivityAt) > 48); },
+  silentHot(leads){ return leads.filter(l => this.score(l) >= 70 && pipelineService.activeIds().includes(l.stage) && hoursSince(l.lastActivityAt) > 48); },
 };
 
 /* ============================== /analytics — pure functions over service data ============================== */
@@ -556,13 +584,13 @@ const analyticsService = {
       const myLeads = leads.filter(l => l.agentId === a.id);
       const contacted = myLeads.filter(l => l.stage !== 'new').length;
       const myDeals = deals.filter(d => d.agentId === a.id);
-      const closed = myDeals.filter(d => (d.stage === 'closed' || pipelineService.stage(d.stage).won) && inRange(d.closedAt, range));
+      const closed = myDeals.filter(d => pipelineService.stage(d.stage).won && inRange(d.closedAt, range));
       const myComm = commissions.filter(c => c.agentId === a.id);
       return { ...a,
         leads: myLeads.length, contacted, contactRate: myLeads.length ? contacted/myLeads.length : 0,
         qualified: myLeads.filter(l => !['new','contacted','lost'].includes(l.stage)).length,
         visits: visits.filter(v => v.agentId === a.id && v.status === 'Completed').length,
-        bookings: myDeals.filter(d => ['booking','agreement','registration','closed'].includes(d.stage) || pipelineService.stage(d.stage).won).length,
+        bookings: myDeals.filter(d => stageIsCommitted(d.stage)).length,
         closures: closed.length, revenue: closed.reduce((s,d)=>s+(d.value||0),0),
         commission: myComm.reduce((s,c)=>s+(c.agentSplit||0),0),
         conversion: myLeads.length ? closed.length/myLeads.length : 0,
@@ -574,8 +602,8 @@ const analyticsService = {
     const activeIds = pipelineService.activeIds();
     const activeLeads = leads.filter(l => activeIds.includes(l.stage));
     const activeDeals = deals.filter(d => activeIds.includes(d.stage));
-    const closedDeals = deals.filter(d => (d.stage === 'closed' || pipelineService.stage(d.stage).won) && inRange(d.closedAt, range));
-    const lostDeals = deals.filter(d => (d.stage === 'lost' || pipelineService.stage(d.stage).lost) && inRange(d.updatedAt, range));
+    const closedDeals = deals.filter(d => pipelineService.stage(d.stage).won && inRange(d.closedAt, range));
+    const lostDeals = deals.filter(d => pipelineService.stage(d.stage).lost && inRange(d.updatedAt, range));
     const probs = s => pipelineService.stage(s).prob;
     const visitsIn = visits.filter(v => inRange(v.date, range));
     const isToday = iso => iso && new Date(iso).toLocaleDateString('en-IN', { timeZone: IST }) === NOW.toLocaleDateString('en-IN', { timeZone: IST });
@@ -589,7 +617,7 @@ const analyticsService = {
       hotLeads: leads.filter(l => leadScoringService.tempOf(l) === 'HOT' && activeIds.includes(l.stage)).length,
       visits: visitsIn.length, visitsToday: visits.filter(v => ['Scheduled','Confirmed'].includes(v.status) && isToday(v.date)).length,
       upcomingVisits: visits.filter(v => ['Scheduled','Confirmed'].includes(v.status) && new Date(v.date) >= new Date(NOW.toDateString())).length,
-      bookings: deals.filter(d => (['booking','agreement','registration','closed'].includes(d.stage) || pipelineService.stage(d.stage).won) && inRange(d.updatedAt, range)).length,
+      bookings: deals.filter(d => stageIsCommitted(d.stage) && inRange(d.updatedAt, range)).length,
       winRate: (closedDeals.length + lostDeals.length) ? closedDeals.length/(closedDeals.length+lostDeals.length) : null,
       overdueTasks: tasks.filter(t => taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).length,
       overdueLeads: leads.filter(l => l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW && activeIds.includes(l.stage)).length,
@@ -851,9 +879,12 @@ const demo = (function(){
         recordAudit('Lead created', l.id, l.source + ' · ' + l.name);
         EventBus.emit('lead.created', { entityId:l.id, leadName:l.name, source:l.source }); return clone(l); },
       async updateLead(id, patch){ await gate(); const l = mockDB.leads.find(x=>x.id===id); if (!l) throw new Error('Lead not found');
-        Object.assign(l, patch); l.lastActivityAt = new Date().toISOString(); recordAudit('Lead updated', id, Object.keys(patch).join(', '));
+        const { temperature, ...rest } = patch;
+        Object.assign(l, rest); l.lastActivityAt = new Date().toISOString(); recordAudit('Lead updated', id, Object.keys(patch).join(', '));
         if (patch.budgetMin !== undefined){ l.req = l.req || {}; l.req.budgetMin = patch.budgetMin; }
         if (patch.budgetMax !== undefined){ l.req = l.req || {}; l.req.budgetMax = patch.budgetMax; }
+        // temperature is stored as dbTemperature in the mock shape (mirrors fromLeadRow's field) — not a bare "temperature" key
+        if (temperature !== undefined) l.dbTemperature = normalizeTemperatureForDb(temperature);
         if (patch.agentId !== undefined) EventBus.emit('lead.assigned', { entityId:id, agentId:patch.agentId });
         if (patch.stage) EventBus.emit('lead.status_changed', { entityId:id, to:patch.stage }); return clone(l); },
       async deleteLead(id){ await gate(); mockDB.leads = mockDB.leads.filter(l=>l.id!==id); recordAudit('Lead deleted', id, ''); return true; },
@@ -870,7 +901,9 @@ const demo = (function(){
         c.messages.push(msg); EventBus.emit('message.sent', { entityId:convoId, simulated:true }); return clone(msg); },
     },
     projectService: { async getProjects(){ await gate(); return clone(mockDB.projects); }, async getProject(id){ await gate(); const p = mockDB.projects.find(x=>x.id===id); if (!p) throw new Error('Project not found'); return clone(p); } },
-    propertyService: { async getProperties(){ await gate(); return clone(mockDB.properties); }, async getProperty(id){ await gate(); const p = mockDB.properties.find(x=>x.id===id); if (!p) throw new Error('Property not found'); return clone(p); } },
+    propertyService: { async getProperties(){ await gate(); return clone(mockDB.properties); }, async getProperty(id){ await gate(); const p = mockDB.properties.find(x=>x.id===id); if (!p) throw new Error('Property not found'); return clone(p); },
+      async setStatus(id, status){ await gate(); const p = mockDB.properties.find(x=>x.id===id); if (!p) throw new Error('Property not found');
+        p.status = status; recordAudit('Property updated', id, 'status → ' + status); return clone(p); } },
     inventoryService: {
       async getInventory(filters = {}){ await gate(); let inv = mockDB.inventory;
         if (filters.projectId) inv = inv.filter(u=>u.projectId===filters.projectId);
@@ -885,6 +918,8 @@ const demo = (function(){
        (camelCase) shape rather than raw DB columns, matching how the rest of
        mockDB is already stored. Never touches Supabase. ---- */
     leadPropertiesService: {
+      async listAll(){ await gate();
+        return clone(mockDB.leadProperties.map(x => ({ ...x, lead: mockDB.leads.find(l => l.id === x.leadId) || null }))); },
       async listByLead(leadId){ await gate();
         return clone(mockDB.leadProperties.filter(x => x.leadId === leadId).map(x => ({ ...x,
           property: x.propertyId ? (mockDB.properties.find(p => p.id === x.propertyId) || null) : null,
@@ -1113,6 +1148,14 @@ const arr1 = x => Array.isArray(x) ? (x[0] ?? '') : x;
    errors + your column list) + budget_min/budget_max after Migration 001.
    UI-only (no leads column): purpose, propertyType, configuration,
    carpetMin, possession, notes, nextFollowUpAt, visitCount. ---- */
+/* leads.temperature holds hot / warm / cold. Write lower-case (matching the
+   values already in the column); read back whatever the DB actually stores and
+   only normalise casing for display, so the stored value is always preserved. */
+const TEMPERATURES = ['hot', 'warm', 'cold'];
+const normalizeTemperatureForDb = t => {
+  const v = String(t ?? '').trim().toLowerCase();
+  return TEMPERATURES.includes(v) ? v : null;
+};
 const LEADS_COLUMNS = new Set(['organization_id','name','phone','whatsapp','email','city','locality','source_id','source_name','campaign','assigned_agent_id','created_by','stage_id','intent','financial_status','budget_min','budget_max','score','temperature','budget_strength','timeline_score','engagement_score','source_score']);
 const scrubLeadRow = (row, { keepNull = false } = {}) => Object.fromEntries(
   Object.entries(row).filter(([k, v]) => LEADS_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
@@ -1152,6 +1195,7 @@ const leadToRow = (l, orgId) => scrubLeadRow({
   assigned_agent_id: l.agentId || null,
   created_by: authAgentId() || null,            // leads_created_by_fkey → agents(id) — the CRM person, not the auth.users UUID
   stage_id: l.stage || null,                    // resolved from pipeline_stages in R.leads.create — never a guessed string
+  temperature: l.temperature ? normalizeTemperatureForDb(l.temperature) : undefined,   // omitted → DB default owns it
   budget_min: (l.budgetMin ?? l.req?.budgetMin) ?? null,
   budget_max: (l.budgetMax ?? l.req?.budgetMax) ?? null,
   /* intent & financial_status deliberately NOT set on insert — your DB
@@ -1163,6 +1207,11 @@ const leadPatchToRow = patch => scrubLeadRow({
   assigned_agent_id: patch.agentId,
   intent: patch.intent,
   financial_status: patch.financial,
+  /* warmth lives in leads.temperature and was previously never written, so
+     any edit silently dropped it. Stored lower-case to match the values the
+     column already holds (hot/warm/cold); display normalises for the UI. */
+  temperature: patch.temperature !== undefined ? normalizeTemperatureForDb(patch.temperature) : undefined,
+  score: patch.score,
   name: patch.name,
   phone: patch.phone,
   email: patch.email,
@@ -1506,6 +1555,15 @@ const R = {
       if (!rows[0] || !rows[0].id) throw new Error('Property insert returned no row — check the RLS SELECT policy on properties.');
       return rows;
     },
+    /* Manual listing-status maintenance (Available / Hold / Unavailable …).
+       This is NOT the sale path — finalizing a real sale goes through the
+       finalize_deal_sale RPC, which is what sets a property to Sold. The
+       guard against setting Sold by hand lives in propertyService.setStatus. */
+    async setStatus(id, status){
+      const rows = await upd('properties', { id }, { status });
+      if (!rows[0] || String(rows[0].status) !== String(status)) throw new Error('Property status verification failed — database returned "' + (rows[0] ? rows[0].status : 'nothing') + '" after update.');
+      return rows;
+    },
   },
   inventory: {
     async list(filters = {}){ let rows = await sel('inventory_units', { limit: 2000 });
@@ -1538,6 +1596,7 @@ const R = {
      existing DB constraint — the connect() guard below is a frontend UX check,
      not a replacement for it. ---- */
   leadProperties: {
+    async listAll(){ return sel('lead_properties', { limit: 2000, cols: '*, leads(*)' }); },
     async listByLead(leadId){ return sel('lead_properties', { eq: { lead_id: leadId }, cols: '*, properties(*), inventory_units(*)' }); },
     async listByProperty(propertyId){ return sel('lead_properties', { eq: { property_id: propertyId }, cols: '*, leads(*)' }); },
     async listByInventoryUnit(unitId){ return sel('lead_properties', { eq: { inventory_unit_id: unitId }, cols: '*, leads(*)' }); },
@@ -1931,18 +1990,35 @@ const propertyService = {
     if (demoMode()) throw new Error('Adding properties isn\'t available in Demo Mode.');   // demo mode is left untouched — no mock write path
     return fromPropertyRow((await R.properties.create(data))[0]);
   },
+  /* Manual listing-status maintenance only. "Sold" is reserved for the
+     finalize_deal_sale RPC so the frontend can never fake a completed sale
+     (no deal_sales row, no lead_properties update, no commission check). */
+  async setStatus(id, status){
+    if (status === 'Sold') throw new Error('A property is marked Sold by finalizing its sale, not by hand. Close the deal, mark the commission Received, then use Finalize Sale.');
+    const current = await this.getProperty(id);
+    if (assetIsSold(current)) throw new Error('This property is Sold — its status can no longer be changed from here.');
+    return demoMode() ? demo.propertyService.setStatus(id, status) : fromPropertyRow((await R.properties.setStatus(id, status))[0]);
+  },
 };
 const inventoryService = {
   async getInventory(filters = {}){ return demoMode() ? demo.inventoryService.getInventory(filters) : (await R.inventory.list(filters)).map(fromUnitRow); },
   async getUnit(id){ return demoMode() ? demo.inventoryService.getUnit(id) : fromUnitRow(await R.inventory.get(id)); },
   async getUnitsByIds(ids){ return demoMode() ? demo.inventoryService.getUnitsByIds(ids) : (await R.inventory.byIds(ids)).map(fromUnitRow); },
-  async setUnitStatus(id, status){ return demoMode() ? demo.inventoryService.setUnitStatus(id, status) : fromUnitRow((await R.inventory.setStatus(id, status))[0] || {}); },
+  /* Manual unit-status maintenance only. "Sold" is reserved for the
+     finalize_deal_sale RPC — same rule as propertyService.setStatus. */
+  async setUnitStatus(id, status){
+    if (status === 'Sold') throw new Error('An inventory unit is marked Sold by finalizing its sale, not by hand. Close the deal, mark the commission Received, then use Finalize Sale.');
+    const current = await this.getUnit(id);
+    if (assetIsSold(current)) throw new Error('This unit is Sold — its status can no longer be changed from here.');
+    return demoMode() ? demo.inventoryService.setUnitStatus(id, status) : fromUnitRow((await R.inventory.setStatus(id, status))[0] || {});
+  },
   async createUnit(data){
     if (demoMode()) throw new Error('Adding inventory units isn\'t available in Demo Mode.');  // demo mode is left untouched — no mock write path
     return fromUnitRow((await R.inventory.create(data))[0]);
   },
 };
 const leadPropertiesService = {
+  async listAll(){ return demoMode() ? demo.leadPropertiesService.listAll() : (await R.leadProperties.listAll()).map(fromLeadPropertyRow); },
   async listByLead(leadId){ return demoMode() ? demo.leadPropertiesService.listByLead(leadId) : (await R.leadProperties.listByLead(leadId)).map(fromLeadPropertyRow); },
   async listByProperty(propertyId){ return demoMode() ? demo.leadPropertiesService.listByProperty(propertyId) : (await R.leadProperties.listByProperty(propertyId)).map(fromLeadPropertyRow); },
   async listByInventoryUnit(unitId){ return demoMode() ? demo.leadPropertiesService.listByInventoryUnit(unitId) : (await R.leadProperties.listByInventoryUnit(unitId)).map(fromLeadPropertyRow); },
@@ -2107,9 +2183,12 @@ const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineServ
 /* ---- Sale lifecycle helpers. "Deal closed", "commission received" and
    "sale finalized" are three DISTINCT states — a closed deal is NOT a sale.
    A sale exists only when a deal_sales row exists. ---- */
-const dealIsClosed = d => !!d && (d.stage === 'closed' || pipelineService.stage(d.stage).won);
+const dealIsClosed = d => !!d && !!pipelineService.stage(d.stage).won;   // resolver handles uuid/slug/label; no literal 'closed' comparison
 const saleReady = (deal, commission, sale) => !sale && dealIsClosed(deal) && !!commission && commission.status === 'Received';
 const SOLD_ASSET_STATUSES = ['Sold'];
+/* Statuses a user may set by hand. "Sold" is deliberately absent — it is
+   owned by the finalize_deal_sale RPC, never by a manual status change. */
+const PROPERTY_MANUAL_STATUSES = ['Available', 'Hold', 'Booked', 'Blocked', 'Unavailable'];
 const assetIsSold = a => !!a && SOLD_ASSET_STATUSES.includes(a.status);
 const scoreCell = l => { const total = leadScoringService.score(l); const temp = leadScoringService.tempOf(l);
   return `<div class="scorecell"><span class="s-num">${total}</span><span class="sbar"><i style="width:${total}%;background:${temp==='HOT'?'var(--red)':temp==='WARM'?'#C8922B':'#8A857C'}"></i></span>${chip(temp, temp === 'HOT' ? 'c-red' : temp === 'WARM' ? 'c-amber' : 'c-slate')}</div>`; };
@@ -2389,14 +2468,26 @@ function dealDrawer(d, ctx){
         : `<select class="inp" data-change="dealStage" data-id="${d.id}">${stageOpts}</select>`}
     </div>`);
 }
-function interestedLeadsSection(list, nm){
-  if (!list || !list.length) return '';
-  // Relationships are kept after a sale as historical record — never deleted.
-  return `<div class="d-sec"><div class="st">Interested Leads (${list.length})</div>
-    ${list.filter(ip => ip.lead).map(ip => `<div class="kv" style="cursor:pointer" data-action="openLead" data-id="${ip.lead.id}">
-        <span class="k">${esc(ip.lead.name)}</span>
-        <span class="v">${ip.interestStatus === 'Sold' ? chip('Sold', 'c-green-d') : chip(ip.interestStatus)} <span style="color:var(--ink3);font-size:11.5px">${esc(nm(ip.lead.agentId))}</span></span>
-      </div>`).join('')}
+/* Property/unit → interested leads. Relationships are kept after a sale as
+   historical record — never deleted. assetLabel names which listing/unit the
+   relationship points at, since a lead may be linked to several. */
+function interestedLeadsSection(list, nm, assetLabel){
+  const rows = (list || []).filter(ip => ip.lead);
+  if (!rows.length) return `<div class="d-sec"><div class="st">Interested Leads (0)</div>
+    <p style="color:var(--ink3);font-size:12.5px">No leads are connected to this ${assetLabel ? 'listing' : 'asset'} yet.</p></div>`;
+  return `<div class="d-sec"><div class="st">Interested Leads (${rows.length})</div>
+    ${rows.map(ip => {
+      const sold = ip.interestStatus === 'Sold';
+      return `<div style="border:1px solid ${sold ? 'var(--green)' : 'var(--line)'};border-radius:10px;padding:11px 13px;margin-bottom:8px${sold ? ';background:var(--bg2)' : ''}">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+          <div><div class="cellstrong">${esc(ip.lead.name)}</div>
+            <div class="cellsub">${ip.lead.phone ? esc(ip.lead.phone) + ' · ' : ''}${esc(nm(ip.lead.agentId))}</div>
+            ${assetLabel ? `<div class="cellsub" style="margin-top:2px">${assetLabel}</div>` : ''}</div>
+          <span>${sold ? chip('Sold', 'c-green-d') : chip(ip.interestStatus)}</span>
+        </div>
+        ${ip.notes ? `<p style="margin-top:7px;font-size:12px;color:var(--ink2)">${esc(ip.notes)}</p>` : ''}
+        <button class="btn sm ghost" style="margin-top:8px" data-action="openLead" data-id="${ip.lead.id}">${icon('external',13)} Open lead</button>
+      </div>`; }).join('')}
   </div>`;
 }
 function unitDrawer(u, project, agents, interestedLeads = []){
@@ -2433,7 +2524,7 @@ function unitDrawer(u, project, agents, interestedLeads = []){
         : ['Available','Hold'].includes(u.status) ? `<button class="btn sm ghost" data-action="holdUnit" data-id="${u.id}">${icon('clock',13)} Put on hold</button>` : ''}
       <button class="btn sm ghost" data-action="shareUnit" data-id="${u.id}">${icon('wa',13)} Share on WhatsApp</button>
     </div>
-    ${interestedLeadsSection(interestedLeads, nm)}`);
+    ${interestedLeadsSection(interestedLeads, nm, `Tower ${esc(u.tower || '—')} · Unit ${esc(u.unitNo || '—')}`)}`);
 }
 function agentDrawer(a, stats){
   openDrawer(`${esc(a.name)} &nbsp;${chip(a.role)} &nbsp;${chip(a.status)}`,
@@ -2470,9 +2561,13 @@ function propertyDrawer(x, agents, interestedLeads = []){
       <div class="kv"><span class="k">Listed by</span><span class="v">${esc(x.listedBy)}${x.exclusive ? ' · <b style="color:var(--accent-ink)">Exclusive</b>' : ''}</span></div>
       <div class="kv"><span class="k">Listing agent</span><span class="v">${esc(nm(x.agent))}</span></div>
     </div>
-    ${assetIsSold(x) ? `<p class="fhint">This listing is <b>Sold</b> in the database — it is excluded from available inventory.</p>`
-      : `<button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>`}
-    ${interestedLeadsSection(interestedLeads, nm)}`);
+    ${assetIsSold(x) ? `<p class="fhint">This listing is <b>Sold</b> in the database — it is excluded from available inventory and its status is locked.</p>`
+      : `<div class="d-sec"><div class="st">Listing status (persists to properties.status)</div>
+          <select class="inp" data-change="propertyStatus" data-id="${x.id}">${PROPERTY_MANUAL_STATUSES.map(s => `<option ${x.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+          <p class="fhint" style="margin-top:8px">“Sold” isn’t listed here — a property becomes Sold by finalizing its deal’s sale, which also records <span class="mono">deal_sales</span> and updates the lead relationship.</p>
+        </div>
+        <button class="btn sm ghost" data-action="newVisit">${icon('visit',13)} Match with a lead</button>`}
+    ${interestedLeadsSection(interestedLeads, nm, esc(x.title))}`);
 }
 
 /* ============================== FORMS ============================== */
@@ -2510,7 +2605,12 @@ function editLeadModal(l){
         <div><label class="f">Budget min (₹)</label><input class="inp" name="budgetMin" type="number" min="0" step="10000" value="${l.req?.budgetMin ?? ''}" placeholder="blank = no minimum"></div>
         <div><label class="f">Budget max (₹)</label><input class="inp" name="budgetMax" type="number" min="0" step="10000" value="${l.req?.budgetMax ?? ''}" placeholder="blank = no maximum"></div>
       </div>
-      <div class="fhint" style="margin-top:10px">Plain numbers only — never formatted strings. Blank budget = cleared (NULL). After saving, the row is re-read from Supabase and the budget verified before the UI updates.</div>
+      <label class="f">Lead warmth</label>
+      <select class="inp" name="temperature">
+        <option value="" ${!l.dbTemperature ? 'selected' : ''}>Auto (from lead score)</option>
+        ${TEMPERATURES.map(t => `<option value="${t}" ${String(l.dbTemperature || '').toLowerCase() === t ? 'selected' : ''}>${t.charAt(0).toUpperCase() + t.slice(1)}</option>`).join('')}
+      </select>
+      <div class="fhint" style="margin-top:10px">Plain numbers only — never formatted strings. Blank budget = cleared (NULL). Warmth writes to <span class="mono">leads.temperature</span>; “Auto” clears it so the score-derived value is shown. After saving, the row is re-read from Supabase and verified before the UI updates.</div>
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="editLeadForm">${icon('check',14)} Save changes</button>`);
 }
@@ -2621,17 +2721,17 @@ function completeVisitModal(v){
 async function addLeadPropertyModal(leadId){
   const [properties, units] = await Promise.all([propertyService.getProperties(), inventoryService.getInventory()]);
   const rows = [
-    ...properties.map(p => ({ kind:'property', id:p.id, label:esc(p.title), icon:'home',
+    ...properties.map(p => ({ kind:'property', id:p.id, label:esc(p.title), icon:'home', sold:assetIsSold(p),
       sub:`${esc(p.config || '—')} · ${esc(p.locality || '—')} · ${inrFull(p.price)} · ${esc(p.status)}`,
       hay:`${p.title} ${p.locality} ${p.city} ${p.config}`.toLowerCase() })),
-    ...units.map(u => ({ kind:'unit', id:u.id, label:`Tower ${esc(u.tower || '—')} · Unit ${esc(u.unitNo || '—')}`, icon:'layers',
+    ...units.map(u => ({ kind:'unit', id:u.id, label:`Tower ${esc(u.tower || '—')} · Unit ${esc(u.unitNo || '—')}`, icon:'layers', sold:assetIsSold(u),
       sub:`${esc(u.config || (u.bhk ? u.bhk + ' BHK' : '—'))} · ${u.carpet ? u.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'} · ${inrFull(u.price)} · ${esc(u.status)}`,
       hay:`${u.tower} ${u.unitNo} ${u.config} ${u.projectId}`.toLowerCase() })),
-  ];
-  const listHtml = rows.length ? rows.map(r => `<label class="sr-item" data-hay="${esc(r.hay)}" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex">
-      <input type="radio" name="selection" value="${r.kind}:${r.id}" style="margin-right:8px;margin-top:2px">
+  ].sort((a, b) => (a.sold === b.sold) ? 0 : a.sold ? 1 : -1);   // Sold assets sink to the bottom and can't be selected
+  const listHtml = rows.length ? rows.map(r => `<label class="sr-item" data-hay="${esc(r.hay)}" style="cursor:${r.sold ? 'not-allowed' : 'pointer'};border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex${r.sold ? ';opacity:.6' : ''}">
+      <input type="radio" name="selection" value="${r.kind}:${r.id}" style="margin-right:8px;margin-top:2px" ${r.sold ? 'disabled' : ''}>
       ${icon(r.icon,15)}
-      <div style="margin-left:6px"><b>${r.label}</b><div class="cellsub">${r.sub}</div></div>
+      <div style="margin-left:6px"><b>${r.label}</b>${r.sold ? ' ' + chip('Sold', 'c-green-d') : ''}<div class="cellsub">${r.sub}</div></div>
     </label>`).join('')
     : '<div class="fhint">No properties or inventory units found yet. Add one from Properties or Inventory first.</div>';
   const statusOpts = LEAD_PROPERTY_STATUSES.map(s => `<option ${s === 'Interested' ? 'selected' : ''}>${s}</option>`).join('');
@@ -2706,7 +2806,7 @@ PAGES.overview = { async render(root, p, seq){
     { l: 'Qualified', v: leads.filter(l => l.stage !== 'lost' && pipelineService.idx(l.stage) >= qIdx).length },
     { l: 'Site visits done', v: visits.filter(v => v.status === 'Completed').length },
     { l: 'Negotiation+', v: deals.filter(d => pipelineService.idx(d.stage) >= pipelineService.idx('negotiation')).length },
-    { l: 'Closed', v: deals.filter(d => d.stage === 'closed' || pipelineService.stage(d.stage).won).length },
+    { l: 'Closed', v: deals.filter(d => pipelineService.stage(d.stage).won).length },
   ];
   const stageItems = pipelineService.stages().filter(s => !['new','contacted'].includes(s.id)).map(s => {
     const items = deals.filter(d => d.stage === s.id); const val2 = items.reduce((a, d) => a + (d.value || 0), 0);
@@ -2870,7 +2970,7 @@ PAGES.deals = { async render(root, p, seq){
   const saleByDeal = Object.fromEntries(sales.map(s => [s.dealId, s]));
   const agentNm = nmOf(agents), projNm = id => (byId(projects, id) || {name:'Resale listing'}).name;
   const show = p.filter === 'stale' ? deals.filter(d => pipelineService.activeIds().includes(d.stage) && hoursSince(d.updatedAt) > 21*24)
-    : p.filter === 'closed' ? deals.filter(d => d.stage === 'closed' || pipelineService.stage(d.stage).won) : deals;
+    : p.filter === 'closed' ? deals.filter(d => pipelineService.stage(d.stage).won) : deals;
   const sizeLabels = ['<₹1 Cr','₹1–2 Cr','₹2–4 Cr','₹4–8 Cr','₹8 Cr+']; const sizeCounts = [0, 0, 0, 0, 0];
   deals.forEach(d => { const v = d.value || 0; sizeCounts[v < 1e7 ? 0 : v < 2e7 ? 1 : v < 4e7 ? 2 : v < 8e7 ? 3 : 4]++; });
   const brokerageStake = pipelineService.stages().filter(s => pipelineService.activeIds().includes(s.id) && !['new','contacted'].includes(s.id)).map(s => {
@@ -3028,19 +3128,25 @@ PAGES.project = { async render(root, p, seq){
 
 PAGES.properties = { async render(root, p, seq){
   const [props, agents] = await Promise.all([propertyService.getProperties(), agentService.getAgents()]);
+  // one read of the junction table, grouped client-side — avoids N queries for N listings
+  const links = await leadPropertiesService.listAll().catch(() => []);
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents);
+  const interestBy = {}; links.filter(l => l.propertyId).forEach(l => (interestBy[l.propertyId] ||= []).push(l));
   root.innerHTML = `
     ${pageHead('Inventory', 'Properties', `${props.filter(x => !assetIsSold(x)).length} of ${props.length} listings still available · statuses read live from the <span class="mono">properties</span> table.`, `
       <button class="btn" data-action="newProperty">${icon('plus',14)} New property</button>`)}
     <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
-      <thead><tr><th>Listing</th><th>Locality</th><th class="num">Carpet</th><th class="num">Price</th><th>Status</th><th>Owner / Listed by</th><th>Agent</th><th class="num">Rate</th></tr></thead>
+      <thead><tr><th>Listing</th><th>Locality</th><th class="num">Carpet</th><th class="num">Price</th><th>Status</th><th>Interest</th><th>Owner / Listed by</th><th>Agent</th><th class="num">Rate</th></tr></thead>
       <tbody>${props.map(x => `<tr data-action="openProperty" data-id="${x.id}"${assetIsSold(x) ? ' style="opacity:.72"' : ''}>
         <td><div class="cellstrong">${esc(x.title)} · ${esc(x.config)}${assetIsSold(x) ? ' ' + chip('Sold', 'c-green-d') : ''}</div><div class="cellsub">${esc(x.type)} · floor ${esc(x.floor)} · ${esc(x.furnishing)}</div></td>
         <td>${esc(x.locality)}${x.city ? ', ' + esc(x.city) : ''}</td>
         <td class="num">${x.carpet ? x.carpet.toLocaleString('en-IN') + ' sq.ft.' : '—'}</td>
         <td class="num">${inr(x.price)}${x.type === 'Rental' ? '/mo' : ''}</td>
         <td>${chip(x.status)}</td>
+        <td>${(() => { const ls = interestBy[x.id] || []; if (!ls.length) return '<span class="cellsub">—</span>';
+          const sold = ls.filter(l => l.interestStatus === 'Sold').length;
+          return `<span class="chip c-teal">${ls.length} lead${ls.length > 1 ? 's' : ''}</span>${sold ? ' ' + chip('Sold', 'c-green-d') : ''}`; })()}</td>
         <td><div>${esc(x.owner)}</div><div class="cellsub">${esc(x.listedBy)}${x.exclusive ? ' · <b style="color:var(--accent-ink)">Exclusive</b>' : ''}</div></td>
         <td>${esc(agentNm(x.agent))}</td>
         <td class="num">${x.carpet ? psf(x.price/x.carpet) : '—'}</td></tr>`).join('')}</tbody></table></div>
@@ -3051,7 +3157,9 @@ PAGES.inventory = { async render(root, p, seq){
   const [projects, agents] = await Promise.all([projectService.getProjects(), agentService.getAgents()]);
   const pid = p.project || (projects[0] && projects[0].id);
   const allUnits = pid ? await inventoryService.getInventory({ projectId: pid }) : [];
+  const unitLinks = await leadPropertiesService.listAll().catch(() => []);
   if (seq !== renderSeq) return;
+  const interestByUnit = {}; unitLinks.filter(l => l.inventoryUnitId).forEach(l => (interestByUnit[l.inventoryUnitId] ||= []).push(l));
   const pr = projects.find(x => x.id === pid) || { name:'', towers:[] };
   const agentNm = nmOf(agents);
   let view = p.view || 'map';
@@ -3092,13 +3200,17 @@ PAGES.inventory = { async render(root, p, seq){
         <div class="legend">${['Available','Hold','Token','Booked','Agreement','Registered','Sold','Unavailable'].map(s => `<span><i class="s-${s}" style="display:inline-block"></i>${s}</span>`).join('')}</div></div>`;
     } else {
       body.innerHTML = `<div class="card" style="padding:0"><div class="tblwrap"><table class="tbl">
-        <thead><tr><th>Unit</th><th>Config</th><th class="num">Carpet</th><th>Facing</th><th class="num">Price</th><th class="num">Rate</th><th>Status</th><th>Agent</th></tr></thead>
+        <thead><tr><th>Unit</th><th>Config</th><th class="num">Carpet</th><th>Facing</th><th class="num">Price</th><th class="num">Rate</th><th>Status</th><th>Interest</th><th>Agent</th></tr></thead>
         <tbody>${inv.map(u => `<tr data-action="openUnit" data-id="${u.id}"${assetIsSold(u) ? ' style="opacity:.72"' : ''}>
           <td><div class="cellstrong">T${esc(u.tower)} · ${esc(u.unitNo)}${assetIsSold(u) ? ' ' + chip('Sold', 'c-green-d') : ''}</div><div class="cellsub">Floor ${u.floor} of ${u.totalFloors}</div></td>
           <td>${esc(u.config)}${u.exclusive ? ' <span class="chip c-teal">Excl.</span>' : ''}</td>
           <td class="num">${u.carpet.toLocaleString('en-IN')}</td><td>${esc(u.facing)}</td>
           <td class="num">${inr(u.price)}</td><td class="num">${psf(u.rate)}</td>
-          <td>${chip(u.status)}</td><td>${esc(agentNm(u.listingAgent))}</td></tr>`).join('')}</tbody></table></div>
+          <td>${chip(u.status)}</td>
+          <td>${(() => { const ls = interestByUnit[u.id] || []; if (!ls.length) return '<span class="cellsub">—</span>';
+            const sold = ls.filter(l => l.interestStatus === 'Sold').length;
+            return `<span class="chip c-teal">${ls.length} lead${ls.length > 1 ? 's' : ''}</span>${sold ? ' ' + chip('Sold', 'c-green-d') : ''}`; })()}</td>
+          <td>${esc(agentNm(u.listingAgent))}</td></tr>`).join('')}</tbody></table></div>
         ${inv.length ? '' : empty('No units match', 'Clear the status filter.')}</div>`;
     }
     $('#invCount').textContent = inv.length + ' units' + (statusF ? ' · ' + statusF : ' · ' + inv.filter(u => !assetIsSold(u)).length + ' not sold');
@@ -3758,6 +3870,7 @@ document.addEventListener('change', async e => {
     if (c === 'taskDone'){ await taskService.setStatus(id, t.checked ? 'Completed' : TASK_OPEN); toast(t.checked ? 'Task completed — verified' : 'Task reopened as Open — verified'); refresh(); }
     if (c === 'taskStatus'){ await taskService.setStatus(id, t.value); toast('Task status → ' + t.value + ' — verified'); refresh(); }
     if (c === 'leadPropertyStatus'){ await leadPropertiesService.updateStatus(id, t.value); toast('Interest status updated' + (prodMode() ? ' — verified against Supabase' : '')); await Actions.openLead({ id: t.dataset.leadId }); }
+    if (c === 'propertyStatus'){ await propertyService.setStatus(id, t.value); toast('Property status → ' + t.value + (prodMode() ? ' — verified' : '')); refresh(); await Actions.openProperty({ id }); }
   } catch(err){
     toast(esc((err && err.message) || 'Update failed'));   // exact database error — never swallowed
     refresh();                                             // reset the control to the persisted value
@@ -3856,6 +3969,7 @@ document.addEventListener('submit', async e => {
         city: (fd.city || '').trim() || null,
         locality: (fd.locality || '').trim() || null,
         budgetMin: bmin, budgetMax: bmax,
+        temperature: fd.temperature,   // '' = Auto (clears the column) — normalizeTemperatureForDb turns '' into null
       };
       await leadService.updateLead(id, patch);
       // read-back verification
@@ -3864,6 +3978,10 @@ document.addEventListener('submit', async e => {
         if (!numEq(check?.req?.budgetMin, bmin) || !numEq(check?.req?.budgetMax, bmax))
           throw new Error('Budget verification failed — expected ' + bmin + '/' + bmax + ', database returned ' + (check?.req?.budgetMin ?? 'null') + '/' + (check?.req?.budgetMax ?? 'null') + '.');
         if (check && check.name !== patch.name) throw new Error('Name verification failed.');
+        const expectedTemp = normalizeTemperatureForDb(patch.temperature);
+        const gotTemp = check?.dbTemperature ? String(check.dbTemperature).toLowerCase() : null;
+        if (gotTemp !== expectedTemp)
+          throw new Error('Warmth verification failed — expected "' + (expectedTemp || 'Auto') + '", database returned "' + (gotTemp || 'Auto') + '".');
       }
       closeModal(); closeDrawer();
       toast('Lead updated' + (prodMode() ? ' — budget verified against Supabase' : ''));
