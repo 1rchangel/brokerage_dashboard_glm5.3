@@ -385,7 +385,6 @@ const CONFIG = {
   AI_CHAT_ENDPOINT: '',        // e.g. https://your-api.example/api/ai/chat
   simulateLatency: true,       // demo-mode skeletons only
   simulateErrors: false,       // demo-mode error/retry demo only
-  brokerageDefaults: { pct: 1, fixed: 500000, gst: 18, tds: 2, agentSplit: 50 },
 };
 
 /* ============================== /utils ============================== */
@@ -644,6 +643,7 @@ const MKT_PLANS = [
 ];
 function seed(){
   const organization = { id:'demo-org', name:'Meridian Realty', city:'Gurugram', gstin:'06AAECM1234F1Z5' };
+  const brokerageSettings = { defaultBrokerageType:'percentage', defaultBrokeragePct:1, defaultFixedAmount:500000, gstPct:18, tdsPct:2, defaultAgentSplitPct:50 };
   const agents = [
     { id:'ag_01', name:'Vikram Khanna',  role:'Owner', email:'vikram@meridianrealty.in', phone:'+91 98110 20001', joined:daysAgo(2200), status:'Active', target:120000000, avgResp:9 },
     { id:'ag_02', name:'Arjun Mehta',    role:'Agent', email:'arjun@meridianrealty.in',   phone:'+91 98110 20002', joined:daysAgo(940),  status:'Active', target:40000000, avgResp:14 },
@@ -797,6 +797,7 @@ function seed(){
   ];
   return { organization, agents, projects, properties, inventory, leads, deals, visits, commissions, tasks, convos, notifications, marketing: structuredClone(MKT_PLANS),
     leadProperties: [],   // demo mirror of the lead_properties junction table — in-memory only, resets on refresh
+    brokerageSettings,    // demo mirror of the brokerage_settings table — in-memory only, resets on refresh
     audit: [{ at:daysAgo(1), actor:'Vikram Khanna', action:'Deal stage changed', entity:'dl_06', details:'booking → agreement' },{ at:daysAgo(2), actor:'Sneha Reddy', action:'Lead assigned', entity:'ld_02', details:'assigned' }] };
 }
 
@@ -827,6 +828,12 @@ const demo = (function(){
   const recordAudit = (action, entity, details) => { mockDB.audit.unshift({ at:new Date().toISOString(), actor:(authService.getCurrentUser()?.name || 'System'), action, entity, details:details||'' }); if (mockDB.audit.length > 80) mockDB.audit.pop(); };
   const svc = {
     organizationService: { async getOrganization(){ await gate(); return clone(mockDB.organization); }, async update(patch){ await gate(); Object.assign(mockDB.organization, patch); return clone(mockDB.organization); } },
+    brokerageSettingsService: {
+      async get(){ await gate(); return clone(mockDB.brokerageSettings); },
+      async save(patch){ await gate(); Object.assign(mockDB.brokerageSettings, patch);
+        recordAudit('Brokerage defaults updated', 'org', patch.defaultBrokerageType === 'fixed' ? ('fixed ' + patch.defaultFixedAmount) : (patch.defaultBrokeragePct + '%'));
+        return clone(mockDB.brokerageSettings); },
+    },
     userService: { async getUsers(){ await gate(); return clone(mockDB.agents.map(a => ({ id:a.id, name:a.name, email:a.email, phone:a.phone, role:a.role, joined:a.joined, status:a.status }))); } },
     agentService: {
       async getAgents(){ await gate(); return clone(mockDB.agents); },
@@ -1289,6 +1296,32 @@ const fromLeadPropertyRow = r => ({
   unit: r.inventory_units ? fromUnitRow(r.inventory_units) : null,
   lead: r.leads ? fromLeadRow(r.leads) : null,
 });
+/* ---- brokerage_settings: one row per organization (organization_id UNIQUE) —
+   hard write-allowlist, same pattern as the other *_COLUMNS sets above. This
+   is the single source of truth for org-level brokerage defaults; nothing
+   else in the app stores a second copy. ---- */
+const BROKERAGE_SETTINGS_COLUMNS = new Set(['organization_id','default_brokerage_type','default_brokerage_pct','default_fixed_amount','gst_pct','tds_pct','default_agent_split_pct']);
+const scrubBrokerageSettingsRow = (row, { keepNull = false } = {}) => Object.fromEntries(
+  Object.entries(row).filter(([k, v]) => BROKERAGE_SETTINGS_COLUMNS.has(k) && v !== undefined && (keepNull || v !== null)));
+const fromBrokerageSettingsRow = r => ({
+  id: r.id,
+  defaultBrokerageType: r.default_brokerage_type === 'fixed' ? 'fixed' : 'percentage',
+  defaultBrokeragePct: r.default_brokerage_pct != null ? Number(r.default_brokerage_pct) : 0,
+  defaultFixedAmount: r.default_fixed_amount != null ? Number(r.default_fixed_amount) : 0,
+  gstPct: r.gst_pct != null ? Number(r.gst_pct) : 0,
+  tdsPct: r.tds_pct != null ? Number(r.tds_pct) : 0,
+  defaultAgentSplitPct: r.default_agent_split_pct != null ? Number(r.default_agent_split_pct) : 50,
+  updatedAt: r.updated_at || null,
+});
+const brokerageSettingsToRow = (s, orgId) => scrubBrokerageSettingsRow({
+  organization_id: orgId || undefined,           // runtime value from the authenticated profile — never hardcoded
+  default_brokerage_type: s.defaultBrokerageType === 'fixed' ? 'fixed' : 'percentage',
+  default_brokerage_pct: s.defaultBrokeragePct != null ? Number(s.defaultBrokeragePct) : null,
+  default_fixed_amount: s.defaultFixedAmount != null ? Number(s.defaultFixedAmount) : null,
+  gst_pct: s.gstPct != null ? Number(s.gstPct) : null,
+  tds_pct: s.tdsPct != null ? Number(s.tdsPct) : null,
+  default_agent_split_pct: s.defaultAgentSplitPct != null ? Number(s.defaultAgentSplitPct) : null,
+}, { keepNull: true });
 
 /* =====================================================================
    /remote — production Supabase implementations (RLS-scoped by design).
@@ -1306,6 +1339,42 @@ const R = {
       const rows = await upd('organizations', { id }, row);
       if (rows[0] && patch.name !== undefined && rows[0].name !== patch.name) throw new Error('Organization name verification failed.');
       return rows;
+    },
+  },
+  /* ---- brokerage_settings: existing table (already created + secured in
+     Supabase). One row per organization (organization_id UNIQUE). This
+     service only reads/writes against it — it never creates, alters, or
+     drops the table/columns/RLS. Insert only happens when no row exists yet
+     for the organization (RLS already restricts INSERT/UPDATE/DELETE to
+     Active Owner/Admin — this service never attempts to bypass that). ---- */
+  brokerageSettings: {
+    async get(){
+      const orgId = authOrgId();
+      if (!orgId) throw new Error('No organization linked to your agent profile');
+      const rows = await sel('brokerage_settings', { eq: { organization_id: orgId } });
+      return rows[0] || null;
+    },
+    async save(patch){
+      const orgId = authOrgId();
+      if (!orgId) throw new Error('No organization loaded — organization_id requires your profile. Sign out and sign in again to reload your profile.');
+      const row = brokerageSettingsToRow(patch, orgId);
+      const existing = await sel('brokerage_settings', { eq: { organization_id: orgId } });
+      const rows = existing.length
+        ? await upd('brokerage_settings', { organization_id: orgId }, row)
+        : await ins('brokerage_settings', [row]);
+      if (!rows[0] || !rows[0].id) throw new Error('Brokerage settings save returned no row — check the RLS policy on brokerage_settings.');
+      // read-back verification: re-read and compare every submitted field against what Supabase actually stored
+      const check = (await sel('brokerage_settings', { eq: { organization_id: orgId } }))[0];
+      if (!check) throw new Error('Save succeeded but the settings could not be re-read — check the RLS SELECT policy on brokerage_settings.');
+      const mismatches = [];
+      if (row.default_brokerage_type !== undefined && String(check.default_brokerage_type) !== String(row.default_brokerage_type)) mismatches.push('default_brokerage_type');
+      if (row.default_brokerage_pct !== undefined && !numEq(check.default_brokerage_pct, row.default_brokerage_pct)) mismatches.push('default_brokerage_pct');
+      if (row.default_fixed_amount !== undefined && !numEq(check.default_fixed_amount, row.default_fixed_amount)) mismatches.push('default_fixed_amount');
+      if (row.gst_pct !== undefined && !numEq(check.gst_pct, row.gst_pct)) mismatches.push('gst_pct');
+      if (row.tds_pct !== undefined && !numEq(check.tds_pct, row.tds_pct)) mismatches.push('tds_pct');
+      if (row.default_agent_split_pct !== undefined && !numEq(check.default_agent_split_pct, row.default_agent_split_pct)) mismatches.push('default_agent_split_pct');
+      if (mismatches.length) throw new Error('Read-back verification failed for: ' + mismatches.join(', ') + '.');
+      return check;
     },
   },
   agents: {
@@ -1734,6 +1803,16 @@ const organizationService = {
   async getOrganization(){ return demoMode() ? demo.organizationService.getOrganization() : R.organization.get(); },
   async update(patch){ return demoMode() ? demo.organizationService.update(patch) : R.organization.update(patch); },
 };
+const brokerageSettingsService = {
+  async get(){
+    if (demoMode()) return demo.brokerageSettingsService.get();
+    const row = await R.brokerageSettings.get();
+    return row ? fromBrokerageSettingsRow(row) : null;
+  },
+  async save(patch){
+    return demoMode() ? demo.brokerageSettingsService.save(patch) : fromBrokerageSettingsRow(await R.brokerageSettings.save(patch));
+  },
+};
 const userService = { async getUsers(){ return demoMode() ? demo.userService.getUsers() : (await R.agents.list()).map(r => ({ id:r.id, name:r.name, email:r.email||'', phone:r.phone||'', role:r.role||'Agent', joined:val(r,['joined_at'],null), status:r.status||'Active' })); } };
 const agentService = {
   async getAgents(){ return demoMode() ? demo.agentService.getAgents() : (await R.agents.list()).map(fromAgentRow); },
@@ -2014,6 +2093,7 @@ const charts = {
 /* ============================== APP / ROUTER ============================== */
 const App = { page:'overview', params:{}, range:'30D', mode:null, org:{ name:'Meridian Realty', city:'Gurugram' }, searchOpen:false };
 let renderSeq = 0;
+let brokerageEditMode = false;   // local UI toggle for the Brokerage defaults card — never persisted
 const NAV = [
   { group:'Command', items:[ {id:'overview',label:'Overview',ic:'overview'}, {id:'ai',label:'AI Analyst',ic:'ai'}, {id:'notifications',label:'Notifications',ic:'bell',badge:()=>notificationService.countUnread()} ] },
   { group:'Sales', items:[ {id:'leads',label:'Leads',ic:'users'}, {id:'pipeline',label:'Pipeline',ic:'pipeline'}, {id:'deals',label:'Deals',ic:'briefcase'}, {id:'visits',label:'Site Visits',ic:'visit'} ] },
@@ -3206,9 +3286,48 @@ PAGES.integrations = { async render(root, p, seq){
     </div>`).join(''), { flush:true })).join('<div style="height:14px"></div>')}`;
 }};
 
+function brokerageDefaultsCardBody(s, canEdit, editing){
+  if (!s && !editing){
+    return `<p style="color:var(--ink3);font-size:12.5px">Brokerage defaults have not been configured for this organization yet.</p>
+      ${canEdit ? `<button class="btn sm ghost" style="margin-top:10px" data-action="editBrokerageSettings">${icon('plus',13)} Set up defaults</button>` : ''}`;
+  }
+  if (!editing){
+    return `${canEdit ? `<div style="display:flex;justify-content:flex-end;margin-bottom:2px"><button class="btn sm ghost" data-action="editBrokerageSettings">${icon('edit',13)} Edit</button></div>` : ''}
+      <div class="kv"><span class="k">Default brokerage</span><span class="v">${s.defaultBrokerageType === 'fixed' ? inrFull(s.defaultFixedAmount) : s.defaultBrokeragePct + '%'}</span></div>
+      <div class="kv"><span class="k">GST on brokerage</span><span class="v">${s.gstPct}%</span></div>
+      <div class="kv"><span class="k">TDS (section 194H)</span><span class="v">${s.tdsPct}%</span></div>
+      <div class="kv"><span class="k">Default agent split</span><span class="v">${s.defaultAgentSplitPct}% agent · ${100 - s.defaultAgentSplitPct}% house</span></div>
+      <p class="fhint" style="margin-top:12px">Per-deal rates come from each deal record (brokerage_type / brokerage_pct / fixed_amount / gst_pct). The math lives in <span class="mono">brokerageCalc</span> + <span class="mono">commissionService</span> — never in components.</p>`;
+  }
+  const d = s || { defaultBrokerageType:'percentage', defaultBrokeragePct:1, defaultFixedAmount:500000, gstPct:18, tdsPct:2, defaultAgentSplitPct:50 };
+  return `<form data-form="brokerageSettings" id="brokerageSettingsForm">
+    <label class="f">Default brokerage</label>
+    <select class="inp" name="defaultBrokerageType">
+      <option value="percentage" ${d.defaultBrokerageType !== 'fixed' ? 'selected' : ''}>Percentage</option>
+      <option value="fixed" ${d.defaultBrokerageType === 'fixed' ? 'selected' : ''}>Fixed amount</option>
+    </select>
+    <div class="frow">
+      <div><label class="f">Default brokerage %</label><input class="inp" name="defaultBrokeragePct" type="number" min="0" max="100" step="0.01" value="${d.defaultBrokeragePct}"></div>
+      <div><label class="f">Fixed brokerage amount (₹)</label><input class="inp" name="defaultFixedAmount" type="number" min="0" step="1000" value="${d.defaultFixedAmount}"></div>
+    </div>
+    <div class="frow">
+      <div><label class="f">GST on brokerage (%)</label><input class="inp" name="gstPct" type="number" min="0" max="100" step="0.01" value="${d.gstPct}"></div>
+      <div><label class="f">TDS — section 194H (%)</label><input class="inp" name="tdsPct" type="number" min="0" max="100" step="0.01" value="${d.tdsPct}"></div>
+    </div>
+    <label class="f">Default agent split (%)</label><input class="inp" id="bsSplit" name="defaultAgentSplitPct" type="number" min="0" max="100" step="0.01" value="${d.defaultAgentSplitPct}">
+    <p class="fhint" id="bsSplitHint" style="margin-top:6px">Agent ${d.defaultAgentSplitPct}% · House ${100 - d.defaultAgentSplitPct}%</p>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button type="button" class="btn ghost sm" data-action="cancelBrokerageSettings">Cancel</button>
+      <button class="btn sm" type="submit">${icon('check',13)} Save</button>
+    </div>
+  </form>`;
+}
 PAGES.settings = { async render(root, p, seq){
-  const stages = await pipelineService.stages();
+  const [stages, brokerageSettings] = await Promise.all([pipelineService.stages(), brokerageSettingsService.get()]);
   if (seq !== renderSeq) return;
+  const role = (authService.getCurrentUser() || {}).role;
+  const canEditBrokerage = role === 'Owner' || role === 'Admin';
+  const editing = brokerageEditMode && canEditBrokerage;
   root.innerHTML = `
     ${pageHead('Admin', 'Settings', 'Organization profile, pipeline configuration, brokerage defaults and mode controls.')}
     <div class="row2">
@@ -3218,11 +3337,8 @@ PAGES.settings = { async render(root, p, seq){
         <label class="f">GSTIN</label><input class="inp" name="gstin" value="${esc(App.org.gstin || '')}">
         <div style="margin-top:14px"><button class="btn sm" type="submit">${icon('check',13)} Save</button>
         <span class="fhint" style="display:inline;margin-left:10px">writes via organizationService.update → organizations table</span></div></form>`, { sub: 'tenant id resolved from your authenticated agent profile — never hardcoded' })}
-      ${card('Brokerage defaults', `<div class="kv"><span class="k">Default brokerage</span><span class="v">${CONFIG.brokerageDefaults.pct}% (or fixed ${inr(CONFIG.brokerageDefaults.fixed)})</span></div>
-        <div class="kv"><span class="k">GST on brokerage</span><span class="v">${CONFIG.brokerageDefaults.gst}%</span></div>
-        <div class="kv"><span class="k">TDS (section 194H)</span><span class="v">${CONFIG.brokerageDefaults.tds}%</span></div>
-        <div class="kv"><span class="k">Default agent split</span><span class="v">${CONFIG.brokerageDefaults.agentSplit}% agent · ${100-CONFIG.brokerageDefaults.agentSplit}% house</span></div>
-        <p class="fhint" style="margin-top:12px">Per-deal rates come from each deal record (brokerage_type / brokerage_pct / fixed_amount / gst_pct). The math lives in <span class="mono">brokerageCalc</span> + <span class="mono">commissionService</span> — never in components.</p>`, { sub: 'display defaults; deals override' })}
+      ${card('Brokerage defaults', brokerageDefaultsCardBody(brokerageSettings, canEditBrokerage, editing),
+        { sub: demoMode() ? 'demo defaults — session only' : 'organization-wide defaults · brokerage_settings table (Owner/Admin can edit)' })}
     </div>
     ${card('Pipeline stages', stages.map((s, i) => `<div class="taskrow" style="cursor:default">
       <span class="mono" style="width:26px;color:var(--ink3)">${i+1}</span>
@@ -3248,6 +3364,13 @@ AI_CHAT_ENDPOINT=<span class="g">${CONFIG.AI_CHAT_ENDPOINT ? esc(CONFIG.AI_CHAT_
   <span class="g">return</span> sel(<span class="g">"leads"</span>) <span class="c">// → supabase.from("leads").select()</span>
 }</div>`)}
     </div>`;
+  if (editing){
+    const splitInput = $('#bsSplit'), splitHint = $('#bsSplitHint');
+    if (splitInput && splitHint) splitInput.addEventListener('input', () => {
+      const v = Math.max(0, Math.min(100, Number(splitInput.value) || 0));
+      splitHint.textContent = `Agent ${v}% · House ${100 - v}%`;
+    });
+  }
 }};
 
 PAGES.security = { async render(root, p, seq){
@@ -3400,6 +3523,12 @@ const Actions = {
   stageMove(d){ toast('Pipeline stages live in the pipeline_stages table — edit them in the database'); },
   toggleCfg(d){ CONFIG[d.key] = !CONFIG[d.key]; refresh(); },
   async resetDemo(){ await demoService.reset(); App.org = await organizationService.getOrganization(); renderShell(); toast('Demo data re-seeded — nothing was ever on disk'); refresh(); },
+  editBrokerageSettings(){
+    const role = (authService.getCurrentUser() || {}).role;
+    if (role !== 'Owner' && role !== 'Admin') return;   // UX gate only — Supabase RLS is the real boundary
+    brokerageEditMode = true; refresh();
+  },
+  cancelBrokerageSettings(){ brokerageEditMode = false; refresh(); },
   connectIntegration(d){ modal('Configure — ' + esc(d.name), `<div class="notice" style="margin:0 0 12px">${icon('alert',16)}<span>Nothing is connected in this prototype and no credentials exist yet. This dialog is where the future configuration will be referenced.</span></div>
     <p style="color:var(--ink2);font-size:13px">To wire <b>${esc(d.name)}</b>, create a row in <span class="mono">integration_connections</span> from your backend with a non-secret status, and point the matching service at real endpoints. The frontend will then read its status as Connected / Error / Disabled.</p>`,
     `<button class="btn" data-action="closeModal">Understood</button>`); },
@@ -3637,6 +3766,29 @@ document.addEventListener('submit', async e => {
       await organizationService.update({ name: fd.name, city: fd.city, gstin: fd.gstin });
       App.org = await organizationService.getOrganization();
       closeModal(); toast('Organization saved — written to organizations'); renderShell(); refresh();
+    });
+    return;
+  }
+  if (kind === 'brokerageSettings'){
+    await guardForm(f, async () => {
+      const within = (n, lo, hi) => Number.isFinite(n) && n >= lo && n <= hi;
+      const type = fd.defaultBrokerageType === 'fixed' ? 'fixed' : 'percentage';
+      const pct = Number(fd.defaultBrokeragePct), fixed = Number(fd.defaultFixedAmount),
+        gst = Number(fd.gstPct), tds = Number(fd.tdsPct), split = Number(fd.defaultAgentSplitPct);
+      if (!within(pct, 0, 100)) throw new Error('Default brokerage % must be a number between 0 and 100.');
+      if (!Number.isFinite(fixed) || fixed < 0) throw new Error('Fixed brokerage amount must be a number that is 0 or greater.');
+      if (!within(gst, 0, 100)) throw new Error('GST on brokerage must be a number between 0 and 100.');
+      if (!within(tds, 0, 100)) throw new Error('TDS must be a number between 0 and 100.');
+      if (!within(split, 0, 100)) throw new Error('Default agent split must be a number between 0 and 100.');
+      const patch = { defaultBrokerageType: type, defaultBrokeragePct: pct, defaultFixedAmount: fixed, gstPct: gst, tdsPct: tds, defaultAgentSplitPct: split };
+      const saved = await brokerageSettingsService.save(patch);
+      // UI-layer re-assertion of the read-back — R.brokerageSettings.save() already verifies against Supabase in production
+      if (prodMode() && (saved.defaultBrokerageType !== type || !numEq(saved.defaultBrokeragePct, pct) || !numEq(saved.defaultFixedAmount, fixed) ||
+          !numEq(saved.gstPct, gst) || !numEq(saved.tdsPct, tds) || !numEq(saved.defaultAgentSplitPct, split)))
+        throw new Error('Saved values did not match what was submitted after re-reading from Supabase.');
+      brokerageEditMode = false;
+      toast('Brokerage defaults saved' + (prodMode() ? ' — verified in Supabase' : ''));
+      refresh();
     });
     return;
   }
