@@ -472,79 +472,71 @@ const brokerageCalc = {
 
 /* ============================== pipeline (shared; loads pipeline_stages in production) ============================== */
 const DEFAULT_STAGES = [   /* DEMO-ONLY — production always loads pipeline_stages and FAILS LOUDLY if it cannot.
-  Shape mirrors the mapped production record (slug/sort/won/lost) so pipelineService.stage()
-  resolves identically in both modes. */
-  { id:'new',            slug:'new',             sort:1,  label:'New Lead',              prob:0.03 },
-  { id:'contacted',      slug:'contacted',       sort:2,  label:'Contacted',             prob:0.06 },
-  { id:'qualified',      slug:'qualified',       sort:3,  label:'Qualified',             prob:0.10 },
-  { id:'shortlisted',    slug:'shortlisted',     sort:4,  label:'Property Shortlisted',  prob:0.15 },
-  { id:'visit_scheduled',slug:'visit_scheduled', sort:5,  label:'Site Visit Scheduled',  prob:0.20 },
-  { id:'visit_done',     slug:'visit_done',      sort:6,  label:'Site Visit Completed',  prob:0.25 },
-  { id:'interested',     slug:'interested',      sort:7,  label:'Interested',            prob:0.32 },
-  { id:'negotiation',    slug:'negotiation',     sort:8,  label:'Negotiation',           prob:0.45 },
-  { id:'token',          slug:'token',           sort:9,  label:'Token / EOI',           prob:0.65 },
-  { id:'booking',        slug:'booking',         sort:10, label:'Booking',               prob:0.80 },
-  { id:'agreement',      slug:'agreement',       sort:11, label:'Agreement',             prob:0.90 },
-  { id:'registration',   slug:'registration',    sort:12, label:'Registration',          prob:0.95 },
-  { id:'closed',         slug:'closed',          sort:13, label:'Closed',                prob:1, won:true },
-  { id:'lost',           slug:'lost',            sort:14, label:'Lost',                  prob:0, lost:true },
+  Shape mirrors the verified production record (stageKey/sort/won/lost) so pipelineService.stage()
+  resolves identically in both modes. Demo's own stage_key values are simplified on purpose and are
+  left as-is — only the property name (stageKey, not slug) was aligned with the verified schema. */
+  { id:'new',            stageKey:'new',             sort:1,  label:'New Lead',              prob:0.03 },
+  { id:'contacted',      stageKey:'contacted',       sort:2,  label:'Contacted',             prob:0.06 },
+  { id:'qualified',      stageKey:'qualified',       sort:3,  label:'Qualified',             prob:0.10 },
+  { id:'shortlisted',    stageKey:'shortlisted',     sort:4,  label:'Property Shortlisted',  prob:0.15 },
+  { id:'visit_scheduled',stageKey:'visit_scheduled', sort:5,  label:'Site Visit Scheduled',  prob:0.20 },
+  { id:'visit_done',     stageKey:'visit_done',      sort:6,  label:'Site Visit Completed',  prob:0.25 },
+  { id:'interested',     stageKey:'interested',      sort:7,  label:'Interested',            prob:0.32 },
+  { id:'negotiation',    stageKey:'negotiation',     sort:8,  label:'Negotiation',           prob:0.45 },
+  { id:'token',          stageKey:'token',           sort:9,  label:'Token / EOI',           prob:0.65 },
+  { id:'booking',        stageKey:'booking',         sort:10, label:'Booking',               prob:0.80 },
+  { id:'agreement',      stageKey:'agreement',       sort:11, label:'Agreement',             prob:0.90 },
+  { id:'registration',   stageKey:'registration',    sort:12, label:'Registration',          prob:0.95 },
+  { id:'closed',         stageKey:'closed',          sort:13, label:'Closed',                prob:1, won:true, terminal:true },
+  { id:'lost',           stageKey:'lost',            sort:14, label:'Lost',                  prob:0, lost:true, terminal:true },
 ];
 const pipelineService = {
   _stages: DEFAULT_STAGES.map(s => ({...s})),
   _loaded: false,
   loaded(){ return !!this._loaded; },
-  async load(){ /* production: read pipeline_stages — FAIL LOUDLY, never fall back to DEFAULT_STAGES */
+  /* Production: read pipeline_stages against the VERIFIED schema
+     (stage_key, label, probability, sort_order, is_terminal, is_won, is_lost)
+     — FAIL LOUDLY, never fall back to DEFAULT_STAGES. No candidate-name
+     guessing anywhere in this mapping: every field below reads its one
+     confirmed column directly. */
+  async load(){
     const rows = await sel('pipeline_stages', { limit: 50 });
     if (!rows || !rows.length) throw new Error('pipeline_stages returned no rows — production refuses to guess stage IDs.');
-    const mapped = rows.map(r => {
-      /* probability is numeric in the DB. It may be stored either as a
-         fraction (0.5) or as a percentage (50). Normalise to a 0–1 fraction
-         exactly once here so every consumer multiplies by the same scale —
-         this is what prevents 50% being read as 0.5% or 5000%. */
-      const raw = Number(val(r, ['probability','win_probability','win_prob'], 0)) || 0;
-      const prob = Math.min(1, Math.max(0, raw > 1 ? raw / 100 : raw));
-      const slug = String(val(r, ['slug','key','code'], '') || '').toLowerCase();
-      const label = val(r, ['label','name','title'], String(r.id));
-      /* won/lost: NOT verified against a live schema. val(r, [...]) tries the
-         same candidate column names this file already uses everywhere else
-         for fields it can't confirm (see gross_value/deal_value etc. above) —
-         that is an existing, established convention in this codebase, not a
-         new assumption. The slug === 'closed'/'won'/'lost' checks below
-         compare against `slug`, a field already read from the row above —
-         they do not invent any column. If pipeline_stages has neither a
-         boolean flag nor a matching slug, a stage simply won't be classified
-         as won/lost, which is the safe failure mode (undercounts rather than
-         mis-fires) rather than guessing from display label text. */
-      const won = !!val(r, ['is_won','won','is_terminal_won'], false) || slug === 'closed' || slug === 'won';
-      const lost = !!val(r, ['is_lost','lost'], false) || slug === 'lost';
-      return { id: r.id, label, slug, prob, won, lost,
-        sort: Number(val(r, ['sort_order','position','sort','display_order','step'], 0)) || 0 };
-    }).sort((a,b) => a.sort - b.sort);      // sort_order is now actually mapped, so this orders correctly
+    const mapped = rows.map(r => ({
+      id: r.id,
+      label: r.label,
+      stageKey: r.stage_key,
+      prob: Number(r.probability ?? 0),         // already a 0–1 fraction in the DB — never renormalized (0.70 = 70%)
+      sort: Number(r.sort_order ?? 0),          // authoritative ordering — never substituted with array position
+      terminal: r.is_terminal === true,
+      won: r.is_won === true,                   // authoritative flag — never inferred from stage_key/label/probability
+      lost: r.is_lost === true,                 // authoritative flag — never inferred from stage_key/label/probability
+    })).sort((a,b) => a.sort - b.sort);
     this._stages = mapped;
     this._loaded = true;
   },
   stages(){ return this._stages.map(s => ({...s})); },
   /* Resolve a stage reference to its real pipeline_stages record. Deals and
-     leads store stage_id (a UUID in production), but older/demo records and
-     some UI paths carry a slug or label instead. Matching on all three is
-     what makes probability resolve in production — an unmatched stage used
-     to silently fall through to prob: 0, zeroing the weighted pipeline. */
+     leads store stage_id (a UUID in production), but demo records carry a
+     plain id instead. Matching on id first (exact, then case-insensitive),
+     then stage_key, then label is what makes probability resolve in both
+     modes — an unmatched stage used to silently fall through to prob: 0,
+     zeroing the weighted pipeline. Semantic comparisons should use
+     stageKeyOf()/the .stageKey field, never this label fallback. */
   stage(id){
     if (id == null) return { id, label: '—', prob: 0 };
     const key = String(id).toLowerCase();
     return this._stages.find(s => s.id === id)
       || this._stages.find(s => String(s.id).toLowerCase() === key)
-      || this._stages.find(s => s.slug && s.slug === key)
+      || this._stages.find(s => s.stageKey && s.stageKey.toLowerCase() === key)
       || this._stages.find(s => String(s.label).toLowerCase() === key)
       || { id, label: String(id), prob: 0 };
   },
   /* Central helper so business logic never compares a raw stage_id (a UUID
-     in production) against a literal string. Everything that used to write
-     `d.stage === 'closed'` etc. should call stageSlug(d.stage) === 'closed'
-     instead — slug is a real field on the resolved stage record, resolved
-     through the same id lookup as everything else, not a hardcoded guess
-     about what a particular id equals. */
-  slugOf(id){ const s = this.stage(id); return s.slug || String(s.id ?? '').toLowerCase(); },
+     in production) against a literal string. Use stageKeyOf(id) === 'closed'
+     etc. — stage_key is the authoritative semantic identifier per the
+     verified schema; label is display-only and is never used for meaning. */
+  stageKeyOf(id){ const s = this.stage(id); return (s.stageKey || String(s.id ?? '')).toLowerCase(); },
   activeIds(){ return this._stages.filter(s => !s.won && !s.lost).map(s => s.id); },
   idx(id){ return this._stages.findIndex(s => s.id === id); },
   move(id, dir){ const i = this._stages.findIndex(s => s.id === id); const j = i + dir;
@@ -605,7 +597,7 @@ const analyticsService = {
       const myComm = commissions.filter(c => c.agentId === a.id);
       return { ...a,
         leads: myLeads.length, contacted, contactRate: myLeads.length ? contacted/myLeads.length : 0,
-        qualified: myLeads.filter(l => !['new','contacted','lost'].includes(pipelineService.slugOf(l.stage))).length,
+        qualified: myLeads.filter(l => !['new','new_lead','contacted'].includes(pipelineService.stageKeyOf(l.stage)) && !pipelineService.stage(l.stage).lost).length,
         visits: visits.filter(v => v.agentId === a.id && v.status === 'Completed').length,
         bookings: myDeals.filter(d => stageIsCommitted(d.stage)).length,
         closures: closed.length, revenue: closed.reduce((s,d)=>s+(d.value||0),0),
@@ -639,7 +631,7 @@ const analyticsService = {
       overdueTasks: tasks.filter(t => taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).length,
       overdueLeads: leads.filter(l => l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW && activeIds.includes(l.stage)).length,
       todayTasks: tasks.filter(t => taskOpen(t) && t.dueAt && isToday(t.dueAt)).length,
-      uncontacted: leads.filter(l => pipelineService.slugOf(l.stage) === 'new' && hoursSince(l.createdAt) > 24).length,
+      uncontacted: leads.filter(l => ['new','new_lead'].includes(pipelineService.stageKeyOf(l.stage)) && hoursSince(l.createdAt) > 24).length,
       staleDeals: activeDeals.filter(d => hoursSince(d.updatedAt) > 21*24),
     };
   },
@@ -2233,11 +2225,19 @@ const TONE = {
   Owner:'c-ink', Admin:'c-teal', Agent:'c-gray', Active:'c-green',
 };
 const chip = (txt, tone) => `<span class="chip ${tone || TONE[txt] || 'c-gray'}">${esc(txt)}</span>`;
-const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineService.stage(stage).won ? 'c-green-d' : pipelineService.stage(stage).lost ? 'c-gray' : ['token','booking','agreement','registration'].includes(pipelineService.slugOf(stage)) ? 'c-orange' : 'c-slate');
+const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineService.stage(stage).won ? 'c-green-d' : pipelineService.stage(stage).lost ? 'c-gray' : ['token','token_eoi','booking','agreement','registration'].includes(pipelineService.stageKeyOf(stage)) ? 'c-orange' : 'c-slate');
 /* ---- Sale lifecycle helpers. "Deal closed", "commission received" and
    "sale finalized" are three DISTINCT states — a closed deal is NOT a sale.
    A sale exists only when a deal_sales row exists. ---- */
-const dealIsClosed = d => !!d && !!pipelineService.stage(d.stage).won;   // resolver handles uuid/slug/label; no literal 'closed' comparison
+/* The verified schema confirms TWO distinct is_won=true terminal stages:
+   'closed' and 'commission_received'. They are not interchangeable here —
+   the finalize_deal_sale RPC's documented precondition is specifically
+   "deal.stage must be Closed", so readiness-to-finalize must check the
+   deal's stage_key is exactly 'closed', not merely "any won stage". Any
+   other UI that means "this deal reached a won/terminal state in general"
+   (e.g. activeIds(), pipeline value exclusion) should keep using the plain
+   .won flag instead of this stricter check. */
+const dealIsClosed = d => !!d && pipelineService.stageKeyOf(d.stage) === 'closed';
 const saleReady = (deal, commission, sale) => !sale && dealIsClosed(deal) && !!commission && commission.status === 'Received';
 const SOLD_ASSET_STATUSES = ['Sold'];
 /* Statuses a user may set by hand. "Sold" is deliberately absent — it is
@@ -2968,9 +2968,9 @@ PAGES.overview = { async render(root, p, seq){
     { l: 'Negotiation+', v: deals.filter(d => pipelineService.idx(d.stage) >= pipelineService.idx('negotiation')).length },
     { l: 'Closed', v: deals.filter(d => pipelineService.stage(d.stage).won).length },
   ];
-  const stageItems = pipelineService.stages().filter(s => !['new','contacted'].includes(s.slug)).map(s => {
+  const stageItems = pipelineService.stages().filter(s => !['new','new_lead','contacted'].includes(s.stageKey)).map(s => {
     const items = deals.filter(d => d.stage === s.id); const val2 = items.reduce((a, d) => a + (d.value || 0), 0);
-    return { l: s.label, v: val2, tip: items.length + ' deals · ' + inr(val2), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' }; });
+    return { l: s.label, v: val2, tip: items.length + ' deals · ' + inr(val2), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','token_eoi','booking','agreement','registration'].includes(s.stageKey) ? '#C8922B' : '#1F6B4D' }; });
   const agentPts = stats.filter(a => a.leads > 0).map(a => ({ x: a.avgResp || 0, y: Math.round(a.conversion * 1000) / 10, r: a.revenue,
     color: a.overdue >= 3 ? '#B23A2E' : a.overdue >= 1 ? '#C8922B' : '#1F6B4D',
     tip: `${a.name} · ${(a.conversion * 100).toFixed(1)}% conversion · ${a.avgResp || '—'}m avg response · ${inr(a.revenue)} closed${a.overdue ? ' · ' + a.overdue + ' overdue' : ''}`,
@@ -3078,7 +3078,7 @@ PAGES.leads = { async render(root, p, seq){
       const tp = leadScoringService.tempOf(l).toLowerCase();
       return (!q || (l.name + l.phone + l.locality + l.source).toLowerCase().includes(q))
         && (!src || l.source === src) && (!temp || tp === temp) && (!stg || l.stage === stg)
-        && (p.filter !== 'uncontacted' || (pipelineService.slugOf(l.stage) === 'new' && hoursSince(l.createdAt) > 24));
+        && (p.filter !== 'uncontacted' || (['new','new_lead'].includes(pipelineService.stageKeyOf(l.stage)) && hoursSince(l.createdAt) > 24));
     });
     const tb = $('#leadTbl tbody');
     tb.innerHTML = rows.map(l => `<tr data-action="openLead" data-id="${l.id}">
@@ -3102,11 +3102,11 @@ PAGES.pipeline = { async render(root, p, seq){
   const [deals, projects, agents] = await Promise.all([dealService.getDeals(), projectService.getProjects(), agentService.getAgents()]);
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents), projNm = id => (byId(projects, id) || {name:'Resale'}).name;
-  const stages = pipelineService.stages().filter(s => !['new','contacted'].includes(s.slug));
-  const active = deals.filter(d => pipelineService.activeIds().includes(d.stage) && !['new','contacted'].includes(pipelineService.slugOf(d.stage)));
+  const stages = pipelineService.stages().filter(s => !['new','new_lead','contacted'].includes(s.stageKey));
+  const active = deals.filter(d => pipelineService.activeIds().includes(d.stage) && !['new','new_lead','contacted'].includes(pipelineService.stageKeyOf(d.stage)));
   const weighted = active.reduce((s,d) => s + (d.value || 0) * pipelineService.stage(d.stage).prob, 0);
   const stageItems = stages.map(s => { const items = deals.filter(d => d.stage === s.id); const v = items.reduce((a, d) => a + (d.value || 0), 0);
-    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' }; });
+    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','token_eoi','booking','agreement','registration'].includes(s.stageKey) ? '#C8922B' : '#1F6B4D' }; });
   const ageLabels = ['0–7d','8–14d','15–21d','22–35d','36d+']; const ageCounts = [0, 0, 0, 0, 0];
   active.forEach(d => { const days = hoursSince(d.updatedAt) / 24; ageCounts[days <= 7 ? 0 : days <= 14 ? 1 : days <= 21 ? 2 : days <= 35 ? 3 : 4]++; });
   const agentShare = (() => { const m = {}; active.forEach(d => m[d.agentId] = (m[d.agentId] || 0) + (d.value || 0));
@@ -3142,10 +3142,10 @@ PAGES.deals = { async render(root, p, seq){
     : p.filter === 'closed' ? deals.filter(d => pipelineService.stage(d.stage).won) : deals;
   const sizeLabels = ['<₹1 Cr','₹1–2 Cr','₹2–4 Cr','₹4–8 Cr','₹8 Cr+']; const sizeCounts = [0, 0, 0, 0, 0];
   deals.forEach(d => { const v = d.value || 0; sizeCounts[v < 1e7 ? 0 : v < 2e7 ? 1 : v < 4e7 ? 2 : v < 8e7 ? 3 : 4]++; });
-  const brokerageStake = pipelineService.stages().filter(s => pipelineService.activeIds().includes(s.id) && !['new','contacted'].includes(s.slug)).map(s => {
+  const brokerageStake = pipelineService.stages().filter(s => pipelineService.activeIds().includes(s.id) && !['new','new_lead','contacted'].includes(s.stageKey)).map(s => {
     const items = deals.filter(d => d.stage === s.id);
     const v = items.reduce((a, d) => a + (commissionService.preview(d).brokerage || 0), 0);
-    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v) + ' brokerage', c: ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' };
+    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v) + ' brokerage', c: ['token','token_eoi','booking','agreement','registration'].includes(s.stageKey) ? '#C8922B' : '#1F6B4D' };
   }).filter(x => x.v > 0);
   root.innerHTML = `
     ${pageHead('Sales', 'Deals', `${deals.length} deals · brokerage previews use per-deal rates from the database.${p.filter ? ` <span class="chip c-amber">Filter: ${esc(p.filter)}</span>` : ''}`)}
@@ -4001,7 +4001,7 @@ const Actions = {
     let text = '';
     if (c){ const lead = c.leadId ? await leadService.getLead(c.leadId).catch(() => null) : null;
       const first = (lead?.name || '').split(' ')[0] || 'ji';
-      text = pipelineService.slugOf(lead?.stage) === 'new' ? `Hello ${first} ji, thank you for your enquiry. I can share options this evening — when is a good time to call?`
+      text = ['new','new_lead'].includes(pipelineService.stageKeyOf(lead?.stage)) ? `Hello ${first} ji, thank you for your enquiry. I can share options this evening — when is a good time to call?`
         : `Namaste ${first} ji, following up on the options we discussed. Shall I schedule a site visit this weekend?`; }
     const el = $('#waText'); if (el && text){ el.value = text; el.focus(); }
     toast('Suggested reply generated (client-side template)');
