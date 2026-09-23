@@ -505,10 +505,20 @@ const pipelineService = {
       const prob = Math.min(1, Math.max(0, raw > 1 ? raw / 100 : raw));
       const slug = String(val(r, ['slug','key','code'], '') || '').toLowerCase();
       const label = val(r, ['label','name','title'], String(r.id));
-      return { id: r.id, label, slug, prob,
-        sort: Number(val(r, ['sort_order','position','sort','display_order','step'], 0)) || 0,
-        won: !!val(r, ['is_won','won','is_terminal_won'], false) || /^(closed|won|closed won)$/i.test(slug || label),
-        lost: !!val(r, ['is_lost','lost'], false) || /^(lost|closed lost)$/i.test(slug || label) };
+      /* won/lost: NOT verified against a live schema. val(r, [...]) tries the
+         same candidate column names this file already uses everywhere else
+         for fields it can't confirm (see gross_value/deal_value etc. above) —
+         that is an existing, established convention in this codebase, not a
+         new assumption. The slug === 'closed'/'won'/'lost' checks below
+         compare against `slug`, a field already read from the row above —
+         they do not invent any column. If pipeline_stages has neither a
+         boolean flag nor a matching slug, a stage simply won't be classified
+         as won/lost, which is the safe failure mode (undercounts rather than
+         mis-fires) rather than guessing from display label text. */
+      const won = !!val(r, ['is_won','won','is_terminal_won'], false) || slug === 'closed' || slug === 'won';
+      const lost = !!val(r, ['is_lost','lost'], false) || slug === 'lost';
+      return { id: r.id, label, slug, prob, won, lost,
+        sort: Number(val(r, ['sort_order','position','sort','display_order','step'], 0)) || 0 };
     }).sort((a,b) => a.sort - b.sort);      // sort_order is now actually mapped, so this orders correctly
     this._stages = mapped;
     this._loaded = true;
@@ -528,6 +538,13 @@ const pipelineService = {
       || this._stages.find(s => String(s.label).toLowerCase() === key)
       || { id, label: String(id), prob: 0 };
   },
+  /* Central helper so business logic never compares a raw stage_id (a UUID
+     in production) against a literal string. Everything that used to write
+     `d.stage === 'closed'` etc. should call stageSlug(d.stage) === 'closed'
+     instead — slug is a real field on the resolved stage record, resolved
+     through the same id lookup as everything else, not a hardcoded guess
+     about what a particular id equals. */
+  slugOf(id){ const s = this.stage(id); return s.slug || String(s.id ?? '').toLowerCase(); },
   activeIds(){ return this._stages.filter(s => !s.won && !s.lost).map(s => s.id); },
   idx(id){ return this._stages.findIndex(s => s.id === id); },
   move(id, dir){ const i = this._stages.findIndex(s => s.id === id); const j = i + dir;
@@ -588,7 +605,7 @@ const analyticsService = {
       const myComm = commissions.filter(c => c.agentId === a.id);
       return { ...a,
         leads: myLeads.length, contacted, contactRate: myLeads.length ? contacted/myLeads.length : 0,
-        qualified: myLeads.filter(l => !['new','contacted','lost'].includes(l.stage)).length,
+        qualified: myLeads.filter(l => !['new','contacted','lost'].includes(pipelineService.slugOf(l.stage))).length,
         visits: visits.filter(v => v.agentId === a.id && v.status === 'Completed').length,
         bookings: myDeals.filter(d => stageIsCommitted(d.stage)).length,
         closures: closed.length, revenue: closed.reduce((s,d)=>s+(d.value||0),0),
@@ -622,7 +639,7 @@ const analyticsService = {
       overdueTasks: tasks.filter(t => taskOpen(t) && t.dueAt && new Date(t.dueAt) < NOW).length,
       overdueLeads: leads.filter(l => l.nextFollowUpAt && new Date(l.nextFollowUpAt) < NOW && activeIds.includes(l.stage)).length,
       todayTasks: tasks.filter(t => taskOpen(t) && t.dueAt && isToday(t.dueAt)).length,
-      uncontacted: leads.filter(l => l.stage === 'new' && hoursSince(l.createdAt) > 24).length,
+      uncontacted: leads.filter(l => pipelineService.slugOf(l.stage) === 'new' && hoursSince(l.createdAt) > 24).length,
       staleDeals: activeDeals.filter(d => hoursSince(d.updatedAt) > 21*24),
     };
   },
@@ -645,6 +662,25 @@ const analyticsService = {
     const m = {}; visits.forEach(v => { if (v.projectId) m[v.projectId] = (m[v.projectId]||0) + 1; });
     const top = Object.entries(m).sort((a,b)=>b[1]-a[1])[0];
     return top ? (byId(projects, top[0]) || {name:'—'}).name : '—';
+  },
+  /* REALIZED, not pipeline/expected: only deals with an actual deal_sales row
+     count here. Deal-closed and commission-received alone never enter this —
+     that distinction is the whole point (see saleReady / dealIsClosed). Sourced
+     from deal_sales.sale_value and the matching commissions row's own stored
+     brokerage/gst/tds fields — nothing here is recalculated or hardcoded. */
+  realized(sales, commissions, range){
+    const inRangeSales = sales.filter(s => inRange(s.finalizedAt, range));
+    const commByDeal = {}; commissions.forEach(c => { if (c.dealId) commByDeal[c.dealId] = c; });
+    const comms = inRangeSales.map(s => commByDeal[s.dealId]).filter(Boolean);
+    return {
+      count: inRangeSales.length,
+      saleValue: inRangeSales.reduce((s,x) => s + (x.saleValue || 0), 0),
+      gci: comms.reduce((s,c) => s + (c.brokerage || 0), 0),          // Gross Commission Income
+      gst: comms.reduce((s,c) => s + (c.gst || 0), 0),
+      tds: comms.reduce((s,c) => s + (c.tds || 0), 0),
+      received: comms.reduce((s,c) => s + (c.received || 0), 0),
+      outstanding: comms.reduce((s,c) => s + (c.outstanding || 0), 0),
+    };
   },
 };
 
@@ -960,6 +996,10 @@ const demo = (function(){
       async updateDealStage(id, stage){ await gate(); const d = mockDB.deals.find(x=>x.id===id); const from = d.stage; d.stage = stage; d.updatedAt = new Date().toISOString();
         recordAudit('Deal stage changed', id, from + ' → ' + stage); EventBus.emit('deal.stage_changed', { entityId:id, from, to:stage });
         if (stage === 'closed') EventBus.emit('deal.won', { entityId:id, value:d.value }); if (stage === 'lost') EventBus.emit('deal.lost', { entityId:id }); return clone(d); },
+      async setAsset(id, { propertyId, unitId }){ await gate(); const d = mockDB.deals.find(x=>x.id===id); if (!d) throw new Error('Deal not found');
+        if (!!propertyId === !!unitId) throw new Error('A deal must reference exactly one property or inventory unit.');
+        d.propertyId = propertyId || null; d.unitId = unitId || null; d.updatedAt = new Date().toISOString();
+        recordAudit('Deal asset connected', id, propertyId ? 'property' : 'inventory unit'); return clone(d); },
     },
     siteVisitService: {
       async getSiteVisits(){ await gate(); return clone(mockDB.visits); },
@@ -1657,6 +1697,19 @@ const R = {
       if (!rows[0] || String(rows[0].stage) !== String(stage)) throw new Error('Deal stage verification failed — database returned "' + (rows[0] ? rows[0].stage : 'nothing') + '" after update.');
       return rows;
     },
+    /* Ordinary deal editing — attaches the asset a deal references. This is
+       NOT the sale path: it never touches status/Sold/deal_sales/lead_properties.
+       Those stay exclusively owned by the finalize_deal_sale RPC. Used when
+       closing a lead as a sale and the linked deal has no asset yet. */
+    async setAsset(id, { propertyId, unitId }){
+      if (!!propertyId === !!unitId) throw new Error('A deal must reference exactly one property or inventory unit.');
+      const patch = { property_id: propertyId || null, inventory_unit_id: unitId || null };
+      const rows = await upd('deals', { id }, patch);
+      if (!rows[0]) throw new Error('Deal asset update returned no row — check the RLS policy on deals.');
+      if (String(rows[0].property_id || '') !== String(propertyId || '') || String(rows[0].inventory_unit_id || '') !== String(unitId || ''))
+        throw new Error('Deal asset verification failed after update.');
+      return rows;
+    },
   },
   visits: {
     list: () => sel('site_visits', { limit: 500 }),
@@ -2031,6 +2084,7 @@ const dealService = {
   async getDeals(){ return demoMode() ? demo.dealService.getDeals() : (await R.deals.list()).map(fromDealRow).sort(descBy('createdAt')); },
   async getDeal(id){ return demoMode() ? demo.dealService.getDeal(id) : fromDealRow(await R.deals.get(id)); },
   async updateDealStage(id, stage){ return demoMode() ? demo.dealService.updateDealStage(id, stage) : fromDealRow((await R.deals.setStage(id, stage))[0] || {}); },
+  async setAsset(id, asset){ return demoMode() ? demo.dealService.setAsset(id, asset) : fromDealRow((await R.deals.setAsset(id, asset))[0] || {}); },
 };
 const siteVisitService = {
   async getSiteVisits(){ return demoMode() ? demo.siteVisitService.getSiteVisits() : (await R.visits.list()).map(fromVisitRow).sort(descBy('date')); },
@@ -2179,7 +2233,7 @@ const TONE = {
   Owner:'c-ink', Admin:'c-teal', Agent:'c-gray', Active:'c-green',
 };
 const chip = (txt, tone) => `<span class="chip ${tone || TONE[txt] || 'c-gray'}">${esc(txt)}</span>`;
-const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineService.stage(stage).won ? 'c-green-d' : (stage === 'lost' || pipelineService.stage(stage).lost) ? 'c-gray' : ['token','booking','agreement','registration'].includes(stage) ? 'c-orange' : 'c-slate');
+const stageChip = stage => chip(pipelineService.stage(stage).label, pipelineService.stage(stage).won ? 'c-green-d' : pipelineService.stage(stage).lost ? 'c-gray' : ['token','booking','agreement','registration'].includes(pipelineService.slugOf(stage)) ? 'c-orange' : 'c-slate');
 /* ---- Sale lifecycle helpers. "Deal closed", "commission received" and
    "sale finalized" are three DISTINCT states — a closed deal is NOT a sale.
    A sale exists only when a deal_sales row exists. ---- */
@@ -2757,6 +2811,111 @@ function editLeadPropertyNotesModal(id, leadId, notes){
     </form>`,
     `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="lpNotesForm">${icon('check',14)} Save notes</button>`);
 }
+/* Shown only when a lead has MORE THAN ONE connected property/unit and its
+   deal has no asset yet — the app never guesses which one is being sold. */
+function chooseCloseAssetModal(leadId, targetStage, dealId, candidates){
+  const rows = candidates.map(ip => { const isProp = !!ip.property; const item = isProp ? ip.property : ip.unit;
+    const label = isProp ? esc(item.title) : `Tower ${esc(item.tower || '—')} · Unit ${esc(item.unitNo || '—')}`;
+    return `<label class="sr-item" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex">
+      <input type="radio" name="asset" value="${isProp ? 'property' : 'unit'}:${item.id}" style="margin-right:8px;margin-top:2px">
+      <div><b>${label}</b><div class="cellsub">${chip(ip.interestStatus)}</div></div>
+    </label>`; }).join('');
+  modal('Which property is this lead buying?',
+    `<form data-form="closeLeadAsset" data-lead-id="${leadId}" data-target-stage="${esc(targetStage)}" data-deal-id="${esc(dealId)}" id="closeAssetForm">
+      <p class="fhint" style="margin-bottom:10px">This lead has multiple connected properties. Pick the one being sold — it becomes the deal's asset.</p>
+      ${rows}
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="closeAssetForm">${icon('check',14)} Use this asset</button>`);
+}
+/* Shown only when a lead has MORE THAN ONE deal. Explicit, informed selection
+   only — never inferred from updated_at, created_at, value, agent, or array
+   order. Shows enough per deal to tell them apart before the user commits. */
+async function chooseCloseDealModal(leadId, targetStage, leadDeals){
+  const [agents, projects] = await Promise.all([agentService.getAgents(), projectService.getProjects()]);
+  const nm = nmOf(agents);
+  const projNm = id => (byId(projects, id) || { name: '—' }).name;
+  const rows = await Promise.all(leadDeals.map(async d => {
+    const asset = d.unitId ? await inventoryService.getUnit(d.unitId).catch(() => null)
+      : d.propertyId ? await propertyService.getProperty(d.propertyId).catch(() => null) : null;
+    const assetLabel = d.unitId ? (asset ? `Tower ${esc(asset.tower || '—')} · Unit ${esc(asset.unitNo || '—')}` : 'Inventory unit')
+      : d.propertyId ? (asset ? esc(asset.title) : 'Property') : '<span style="color:var(--ink3)">No asset connected yet</span>';
+    return `<label class="sr-item" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;display:flex">
+      <input type="radio" name="deal" value="${d.id}" style="margin-right:8px;margin-top:3px">
+      <div style="flex:1">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(String(d.id).slice(0,8))}</b>${stageChip(d.stage)}</div>
+        <div class="cellsub">${assetLabel}${d.projectId ? ' · ' + esc(projNm(d.projectId)) : ''}</div>
+        <div class="cellsub">${inrFull(d.value)} · ${esc(nm(d.agentId))} · created ${fmtDate(d.createdAt)} · updated ${fmtDate(d.updatedAt)}</div>
+      </div>
+    </label>`;
+  }));
+  modal('Which deal is this lead closing?',
+    `<form data-form="closeLeadDeal" data-lead-id="${leadId}" data-target-stage="${esc(targetStage)}" id="closeDealForm">
+      <p class="fhint" style="margin-bottom:10px">This lead has ${leadDeals.length} deals. Pick the one being closed as a sale — nothing is chosen automatically.</p>
+      ${rows.join('')}
+    </form>`,
+    `<button class="btn ghost" data-action="closeModal">Cancel</button><button class="btn" type="submit" form="closeDealForm">${icon('check',14)} Use this deal</button>`);
+}
+/* Orchestrates "close this lead as a sale" WITHOUT touching finalize_deal_sale's
+   territory. It only: (1) resolves — with explicit user choice, never a
+   heuristic — which deal and which asset apply, via ordinary deal edits,
+   (2) moves the deal + lead to the target stage, (3) offers — never auto-runs —
+   Finalize Sale when the deal is already eligible. Sold/deal_sales stay 100%
+   owned by the RPC. */
+async function closeLeadAsSale(leadId, targetStage, selectEl, forcedAsset, forcedDealId){
+  const revert = () => { if (selectEl) leadService.getLead(leadId).then(l => { if (l) selectEl.value = l.stage; }); };
+  try {
+    const deals = await dealService.getDeals();
+    const leadDeals = deals.filter(d => d.leadId === leadId);   // intentionally unsorted — order must never imply a choice
+    let deal;
+    if (forcedDealId){
+      deal = leadDeals.find(d => d.id === forcedDealId) || null;
+      if (!deal){ revert(); toast('That deal could not be found — it may have changed since you picked it. Please try again.'); return; }
+    } else if (leadDeals.length === 0){
+      revert();
+      toast('Cannot close this lead as a sale. Connect a property or inventory unit to the deal first.');
+      return;
+    } else if (leadDeals.length === 1){
+      deal = leadDeals[0];
+    } else {
+      revert();
+      await chooseCloseDealModal(leadId, targetStage, leadDeals);   // explicit choice required — re-enters via the closeLeadDeal form → forcedDealId
+      return;
+    }
+    let propertyId = deal.propertyId, unitId = deal.unitId;
+    if (!propertyId && !unitId){
+      if (forcedAsset){
+        propertyId = forcedAsset.kind === 'property' ? forcedAsset.id : null;
+        unitId = forcedAsset.kind === 'unit' ? forcedAsset.id : null;
+      } else {
+        const links = await leadPropertiesService.listByLead(leadId).catch(() => []);
+        const candidates = links.filter(l => (l.property || l.unit) && l.interestStatus !== 'Rejected' && l.interestStatus !== 'Sold');
+        if (!candidates.length){
+          revert();
+          toast('Cannot close this lead as a sale. Connect a property or inventory unit to the deal first.');
+          return;
+        }
+        if (candidates.length > 1){
+          revert();
+          chooseCloseAssetModal(leadId, targetStage, deal.id, candidates);   // explicit choice required — re-enters via the closeLeadAsset form → forcedAsset
+          return;
+        }
+        const only = candidates[0];
+        propertyId = only.propertyId; unitId = only.inventoryUnitId;
+      }
+      await dealService.setAsset(deal.id, { propertyId, unitId });
+    }
+    await dealService.updateDealStage(deal.id, targetStage);
+    await leadService.updateLead(leadId, { stage: targetStage });
+    closeDrawer(); refresh(); renderBadges();
+    // never auto-finalize — only surface the accurate, non-conflated state
+    const [commissions] = await Promise.all([commissionService.getCommissions()]);
+    const comm = commissions.find(c => c.dealId === deal.id) || null;
+    const freshDeal = await dealService.getDeal(deal.id);
+    const sale = await saleService.getByDeal(deal.id).catch(() => null);
+    if (saleReady(freshDeal, comm, sale)) Actions.finalizeSale({ id: deal.id });
+    else toast('Lead closed — ' + (comm && comm.status === 'Received' ? 'Deal Closed, ready to finalize' : 'Deal Closed — Commission Pending'));
+  } catch(err){ revert(); toast(esc(err.message)); }
+}
 
 /* ============================== GLOBAL SEARCH ============================== */
 let _searchToken = 0;
@@ -2783,12 +2942,13 @@ document.addEventListener('click', e => { if (!e.target.closest('.searchbox')) $
 const PAGES = {};
 
 PAGES.overview = { async render(root, p, seq){
-  const [leads, deals, visits, tasks, commissions, projects, agents] = await Promise.all([
+  const [leads, deals, visits, tasks, commissions, projects, agents, sales] = await Promise.all([
     leadService.getLeads(), dealService.getDeals(), siteVisitService.getSiteVisits(), taskService.getTasks(),
-    commissionService.getCommissions(), projectService.getProjects(), agentService.getAgents()]);
+    commissionService.getCommissions(), projectService.getProjects(), agentService.getAgents(), saleService.getSales().catch(() => [])]);
   if (seq !== renderSeq) return;
   const data = { leads, deals, visits, tasks, commissions };
   const ov = analyticsService.overview(data, App.range);
+  const rz = analyticsService.realized(sales, commissions, App.range);
   const months = analyticsService.monthly(deals, App.range);
   const stats = analyticsService.agentStats(agents, leads, deals, commissions, visits, tasks, App.range);
   const srcTop = analyticsService.sourcePerformance(leads).slice(0, 7);
@@ -2808,9 +2968,9 @@ PAGES.overview = { async render(root, p, seq){
     { l: 'Negotiation+', v: deals.filter(d => pipelineService.idx(d.stage) >= pipelineService.idx('negotiation')).length },
     { l: 'Closed', v: deals.filter(d => pipelineService.stage(d.stage).won).length },
   ];
-  const stageItems = pipelineService.stages().filter(s => !['new','contacted'].includes(s.id)).map(s => {
+  const stageItems = pipelineService.stages().filter(s => !['new','contacted'].includes(s.slug)).map(s => {
     const items = deals.filter(d => d.stage === s.id); const val2 = items.reduce((a, d) => a + (d.value || 0), 0);
-    return { l: s.label, v: val2, tip: items.length + ' deals · ' + inr(val2), c: s.won ? '#155038' : (s.lost || s.id === 'lost') ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.id) ? '#C8922B' : '#1F6B4D' }; });
+    return { l: s.label, v: val2, tip: items.length + ' deals · ' + inr(val2), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' }; });
   const agentPts = stats.filter(a => a.leads > 0).map(a => ({ x: a.avgResp || 0, y: Math.round(a.conversion * 1000) / 10, r: a.revenue,
     color: a.overdue >= 3 ? '#B23A2E' : a.overdue >= 1 ? '#C8922B' : '#1F6B4D',
     tip: `${a.name} · ${(a.conversion * 100).toFixed(1)}% conversion · ${a.avgResp || '—'}m avg response · ${inr(a.revenue)} closed${a.overdue ? ' · ' + a.overdue + ' overdue' : ''}`,
@@ -2835,7 +2995,7 @@ PAGES.overview = { async render(root, p, seq){
     <div class="brief"><div class="b-eyebrow">Today's Briefing</div><div class="b-date">${NOW.getDate()} ${MONTHS[NOW.getMonth()]} ${NOW.getFullYear()} · generated from live data</div>
       <ul>${brief.length ? brief.map(b => `<li>${icon(b.ic,15)}<span>${b.t}</span></li>`).join('') : '<li>' + icon('check',15) + '<span>Nothing needs attention right now.</span></li>'}</ul></div>
     <div class="grid g4">
-      ${kpi('Closed Revenue', inr(ov.closedRevenue), `${ov.closedCount} closures · ${fmtRange(App.range)}`, { act:'nav', attrs:`data-page="deals" data-filter="closed"` }, months.map(m=>m.value))}
+      ${kpi('Deals Closed (Value)', inr(ov.closedRevenue), `${ov.closedCount} closures · pipeline stage only, not a confirmed sale`, { act:'nav', attrs:`data-page="deals" data-filter="closed"` }, months.map(m=>m.value))}
       ${kpi('Pipeline Value', inr(ov.pipelineValue), `${ov.activeDeals} active deals`, { act:'nav', attrs:'data-page="pipeline"' }, [])}
       ${kpi('Weighted Pipeline', inr(ov.weightedPipeline), 'probability-adjusted', { act:'nav', attrs:'data-page="pipeline"' }, [])}
       ${kpi('Expected Commission', inr(ov.commissionOutstanding), `${inr(ov.commissionEarned)} received in range`, { act:'nav', attrs:'data-page="commissions"' }, [])}
@@ -2843,6 +3003,15 @@ PAGES.overview = { async render(root, p, seq){
       ${kpi('Site Visits', ov.visits, `${ov.visitsToday} today · ${ov.upcomingVisits} upcoming`, { act:'nav', attrs:'data-page="visits" data-filter="upcoming"' }, [])}
       ${kpi('Bookings', ov.bookings, `token → registration in range`, { act:'nav', attrs:'data-page="deals"' }, [])}
       ${kpi('Win Rate', ov.winRate == null ? '—' : (ov.winRate*100).toFixed(0) + '%', 'closed vs closed+lost', { act:'nav', attrs:'data-page="deals"' }, [])}
+    </div>
+    <div class="brief" style="background:var(--bg2)"><div class="b-eyebrow">Realized Sales — completed only</div>
+      <div class="b-date">A deal being Closed is not a sale. These numbers count only deals with a <span class="mono">deal_sales</span> record — finalized via the sale RPC, asset marked Sold.</div>
+      <div class="grid g4" style="margin-top:10px">
+        ${kpi('Finalized Sales', String(rz.count), `${fmtRange(App.range)}`, { act:'nav', attrs:'data-page="sales"' }, [])}
+        ${kpi('Realized Sale Value', inr(rz.saleValue), 'sum of deal_sales.sale_value', { act:'nav', attrs:'data-page="sales"' }, [])}
+        ${kpi('GCI (Gross Commission)', inr(rz.gci), `GST ${inr(rz.gst)} · TDS ${inr(rz.tds)}`, { act:'nav', attrs:'data-page="commissions"' }, [])}
+        ${kpi('Commission Received', inr(rz.received), `${inr(rz.outstanding)} outstanding on finalized sales`, { act:'nav', attrs:'data-page="commissions"' }, [])}
+      </div>
     </div>
     <div class="row2">
       ${card('Closed revenue by month', charts.vbars(months.map(m => ({ l: m.label, v: m.value, cur: m.cur })), { tip: inr, fmt: inr, values: true }), { sub: 'computed from deal records' })}
@@ -2909,7 +3078,7 @@ PAGES.leads = { async render(root, p, seq){
       const tp = leadScoringService.tempOf(l).toLowerCase();
       return (!q || (l.name + l.phone + l.locality + l.source).toLowerCase().includes(q))
         && (!src || l.source === src) && (!temp || tp === temp) && (!stg || l.stage === stg)
-        && (p.filter !== 'uncontacted' || (l.stage === 'new' && hoursSince(l.createdAt) > 24));
+        && (p.filter !== 'uncontacted' || (pipelineService.slugOf(l.stage) === 'new' && hoursSince(l.createdAt) > 24));
     });
     const tb = $('#leadTbl tbody');
     tb.innerHTML = rows.map(l => `<tr data-action="openLead" data-id="${l.id}">
@@ -2933,11 +3102,11 @@ PAGES.pipeline = { async render(root, p, seq){
   const [deals, projects, agents] = await Promise.all([dealService.getDeals(), projectService.getProjects(), agentService.getAgents()]);
   if (seq !== renderSeq) return;
   const agentNm = nmOf(agents), projNm = id => (byId(projects, id) || {name:'Resale'}).name;
-  const stages = pipelineService.stages().filter(s => !['new','contacted'].includes(s.id));
-  const active = deals.filter(d => pipelineService.activeIds().includes(d.stage) && !['new','contacted'].includes(d.stage));
+  const stages = pipelineService.stages().filter(s => !['new','contacted'].includes(s.slug));
+  const active = deals.filter(d => pipelineService.activeIds().includes(d.stage) && !['new','contacted'].includes(pipelineService.slugOf(d.stage)));
   const weighted = active.reduce((s,d) => s + (d.value || 0) * pipelineService.stage(d.stage).prob, 0);
   const stageItems = stages.map(s => { const items = deals.filter(d => d.stage === s.id); const v = items.reduce((a, d) => a + (d.value || 0), 0);
-    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v), c: s.won ? '#155038' : (s.lost || s.id === 'lost') ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.id) ? '#C8922B' : '#1F6B4D' }; });
+    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v), c: s.won ? '#155038' : s.lost ? '#B3AEA4' : ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' }; });
   const ageLabels = ['0–7d','8–14d','15–21d','22–35d','36d+']; const ageCounts = [0, 0, 0, 0, 0];
   active.forEach(d => { const days = hoursSince(d.updatedAt) / 24; ageCounts[days <= 7 ? 0 : days <= 14 ? 1 : days <= 21 ? 2 : days <= 35 ? 3 : 4]++; });
   const agentShare = (() => { const m = {}; active.forEach(d => m[d.agentId] = (m[d.agentId] || 0) + (d.value || 0));
@@ -2973,10 +3142,10 @@ PAGES.deals = { async render(root, p, seq){
     : p.filter === 'closed' ? deals.filter(d => pipelineService.stage(d.stage).won) : deals;
   const sizeLabels = ['<₹1 Cr','₹1–2 Cr','₹2–4 Cr','₹4–8 Cr','₹8 Cr+']; const sizeCounts = [0, 0, 0, 0, 0];
   deals.forEach(d => { const v = d.value || 0; sizeCounts[v < 1e7 ? 0 : v < 2e7 ? 1 : v < 4e7 ? 2 : v < 8e7 ? 3 : 4]++; });
-  const brokerageStake = pipelineService.stages().filter(s => pipelineService.activeIds().includes(s.id) && !['new','contacted'].includes(s.id)).map(s => {
+  const brokerageStake = pipelineService.stages().filter(s => pipelineService.activeIds().includes(s.id) && !['new','contacted'].includes(s.slug)).map(s => {
     const items = deals.filter(d => d.stage === s.id);
     const v = items.reduce((a, d) => a + (commissionService.preview(d).brokerage || 0), 0);
-    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v) + ' brokerage', c: ['token','booking','agreement','registration'].includes(s.id) ? '#C8922B' : '#1F6B4D' };
+    return { l: s.label, v, tip: items.length + ' deals · ' + inr(v) + ' brokerage', c: ['token','booking','agreement','registration'].includes(s.slug) ? '#C8922B' : '#1F6B4D' };
   }).filter(x => x.v > 0);
   root.innerHTML = `
     ${pageHead('Sales', 'Deals', `${deals.length} deals · brokerage previews use per-deal rates from the database.${p.filter ? ` <span class="chip c-amber">Filter: ${esc(p.filter)}</span>` : ''}`)}
@@ -3014,6 +3183,9 @@ PAGES.sales = { async render(root, p, seq){
     commission: commissions.find(c => c.dealId === s.dealId) || null }))
     .sort((a, b) => new Date(b.s.finalizedAt || 0) - new Date(a.s.finalizedAt || 0));
   const totalValue = rows.reduce((a, r) => a + (r.s.saleValue || 0), 0);
+  const totalGci = rows.reduce((a, r) => a + (r.commission?.brokerage || 0), 0);
+  const totalGst = rows.reduce((a, r) => a + (r.commission?.gst || 0), 0);
+  const totalTds = rows.reduce((a, r) => a + (r.commission?.tds || 0), 0);
   const readyCount = deals.filter(d => dealIsClosed(d) && !sales.some(s => s.dealId === d.id)
     && (commissions.find(c => c.dealId === d.id) || {}).status === 'Received').length;
   const closedNotFinalized = deals.filter(d => dealIsClosed(d) && !sales.some(s => s.dealId === d.id)).length;
@@ -3023,8 +3195,12 @@ PAGES.sales = { async render(root, p, seq){
       ${[['Finalized sales', String(rows.length)], ['Total sale value', inr(totalValue)], ['Ready to finalize', String(readyCount)], ['Closed, not finalized', String(closedNotFinalized)]]
         .map(([k, v]) => `<div class="card" style="padding:14px 16px"><div class="k-label">${k}</div><div class="k-val" style="font-size:21px">${v}</div></div>`).join('')}
     </div>
-    <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl" style="min-width:980px">
-      <thead><tr><th>Sale</th><th>Buyer / Lead</th><th>Property / Inventory Unit</th><th class="num">Sale value</th><th>Agent</th><th class="num">Finalized</th><th>Commission</th></tr></thead>
+    <div class="grid g4">
+      ${[['GCI on finalized sales', inr(totalGci)], ['GST', inr(totalGst)], ['TDS', inr(totalTds)], ['Net commission', inr(totalGci + totalGst - totalTds)]]
+        .map(([k, v]) => `<div class="card" style="padding:14px 16px"><div class="k-label">${k}</div><div class="k-val" style="font-size:21px">${v}</div></div>`).join('')}
+    </div>
+    <div class="card" style="padding:0"><div class="tblwrap"><table class="tbl" style="min-width:1180px">
+      <thead><tr><th>Sale</th><th>Buyer / Lead</th><th>Property / Inventory Unit</th><th class="num">Sale value</th><th>Agent</th><th class="num">Finalized</th><th class="num">Commission</th><th class="num">GST</th><th class="num">TDS</th><th>Status</th></tr></thead>
       <tbody>${rows.map(({ s, deal, lead, unit, property, commission }) => `<tr ${deal ? `data-action="openDeal" data-id="${deal.id}"` : ''}>
         <td><div class="cellstrong">${esc(String(s.id).slice(0,8))} ${chip('Finalized', 'c-green-d')}</div><div class="cellsub">deal ${esc(String(s.dealId).slice(0,8))}</div></td>
         <td><div class="cellstrong">${esc(deal?.buyer || '—')}</div><div class="cellsub">${lead ? esc(lead.name) : 'No lead linked'}</div></td>
@@ -3033,6 +3209,9 @@ PAGES.sales = { async render(root, p, seq){
         <td class="num">${inr(s.saleValue ?? deal?.value)}</td>
         <td>${esc(agentNm(deal?.agentId))}</td>
         <td class="num">${fmtDate(s.finalizedAt)}</td>
+        <td class="num" style="font-weight:650">${commission ? inr(commission.brokerage) : '—'}</td>
+        <td class="num">${commission && commission.gst ? inr(commission.gst) : '—'}</td>
+        <td class="num">${commission && commission.tds ? inr(commission.tds) : '—'}</td>
         <td>${commission ? chip(commission.status) : '<span class="cellsub">—</span>'}</td></tr>`).join('')}</tbody></table></div>
       ${rows.length ? '' : empty('No finalized sales yet', 'Close a deal, mark its commission Received, then finalize the sale from the deal drawer.')}</div>`;
 }};
@@ -3154,7 +3333,7 @@ PAGES.properties = { async render(root, p, seq){
 }};
 
 PAGES.inventory = { async render(root, p, seq){
-  const [projects, agents] = await Promise.all([projectService.getProjects(), agentService.getAgents()]);
+  const [projects, agents, standaloneProperties] = await Promise.all([projectService.getProjects(), agentService.getAgents(), propertyService.getProperties()]);
   const pid = p.project || (projects[0] && projects[0].id);
   const allUnits = pid ? await inventoryService.getInventory({ projectId: pid }) : [];
   const unitLinks = await leadPropertiesService.listAll().catch(() => []);
@@ -3173,8 +3352,13 @@ PAGES.inventory = { async render(root, p, seq){
   const rateBars = charts.hbars(configs.map(c => { const us = allUnits.filter(u => u.config === c);
     return { l: c || '—', v: Math.round(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length), tip: psf(us.reduce((s, u) => s + (u.rate || 0), 0) / us.length) + ' · ' + us.length + ' units', c: '#1F6B4D' }; }));
   root.innerHTML = `
-    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit.`, `
+    ${pageHead('Inventory', 'Inventory — Unit Ledger', `Developer inventory by tower → floor → unit. Standalone resale/rental listings live in <span class="mono">properties</span>, shown below — they are a separate table, not duplicated here.`, `
       <button class="btn" data-action="newUnit" data-project="${pid || ''}">${icon('plus',14)} New unit</button>`)}
+    ${standaloneProperties.length ? `<div class="card" style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><div class="cellstrong">${standaloneProperties.filter(x => !assetIsSold(x)).length} of ${standaloneProperties.length} standalone properties still available</div>
+        <div class="cellsub">Resale/rental listings from <span class="mono">properties</span> — not tied to a project, so they don't appear in the tower map below.</div></div>
+      <button class="btn ghost sm" data-action="nav" data-page="properties">${icon('external',13)} View Properties</button>
+    </div>` : ''}
     <div class="filterbar">
       <select class="inp" id="invPrj">${projects.map(x => `<option value="${x.id}" ${x.id === pid ? 'selected' : ''}>${esc(x.name)}${x.locality ? ' · ' + esc(x.locality) : ''}</option>`).join('')}</select>
       <div class="seg" id="invView"><button data-action="invView" data-view="map" class="${view === 'map' ? 'active' : ''}">Tower map</button><button data-action="invView" data-view="grid" class="${view === 'grid' ? 'active' : ''}">Unit list</button></div>
@@ -3817,7 +4001,7 @@ const Actions = {
     let text = '';
     if (c){ const lead = c.leadId ? await leadService.getLead(c.leadId).catch(() => null) : null;
       const first = (lead?.name || '').split(' ')[0] || 'ji';
-      text = lead?.stage === 'new' ? `Hello ${first} ji, thank you for your enquiry. I can share options this evening — when is a good time to call?`
+      text = pipelineService.slugOf(lead?.stage) === 'new' ? `Hello ${first} ji, thank you for your enquiry. I can share options this evening — when is a good time to call?`
         : `Namaste ${first} ji, following up on the options we discussed. Shall I schedule a site visit this weekend?`; }
     const el = $('#waText'); if (el && text){ el.value = text; el.focus(); }
     toast('Suggested reply generated (client-side template)');
@@ -3863,7 +4047,13 @@ document.addEventListener('change', async e => {
   const t = e.target.closest('[data-change]'); if (!t) return;
   const { change: c, id } = t.dataset;
   try {
-    if (c === 'leadStage'){ await leadService.updateLead(id, { stage: t.value }); toast('Stage updated — ' + pipelineService.stage(t.value).label); closeDrawer(); refresh(); renderBadges(); }
+    if (c === 'leadStage'){
+      if (pipelineService.stage(t.value).won){
+        await closeLeadAsSale(id, t.value, t);   // enforces: no completed sale without a connected + verified asset
+      } else {
+        await leadService.updateLead(id, { stage: t.value }); toast('Stage updated — ' + pipelineService.stage(t.value).label); closeDrawer(); refresh(); renderBadges();
+      }
+    }
     if (c === 'leadAgent'){ await leadService.updateLead(id, { agentId: t.value || null }); toast(t.value ? 'Lead assigned' : 'Lead unassigned'); renderBadges(); }
     if (c === 'dealStage'){ await dealService.updateDealStage(id, t.value); toast('Deal stage → ' + pipelineService.stage(t.value).label + ' — verified'); closeDrawer(); refresh(); }
     if (c === 'agentRole'){ await agentService.updateRole(id, t.value); toast('Role updated — verified (frontend hint; RLS enforces real permissions)'); }
@@ -4067,6 +4257,23 @@ document.addEventListener('submit', async e => {
       await leadPropertiesService.updateNotes(id, fd.notes || '');
       closeModal(); toast('Notes updated' + (prodMode() ? ' — verified in Supabase' : ''));
       await Actions.openLead({ id: leadId });
+    });
+    return;
+  }
+  if (kind === 'closeLeadAsset'){
+    await guardForm(f, async () => {
+      if (!fd.asset) throw new Error('Select which connected property or unit is being sold.');
+      const [selKind, selId] = String(fd.asset).split(':');
+      closeModal();
+      await closeLeadAsSale(f.dataset.leadId, f.dataset.targetStage, null, { kind: selKind, id: selId }, f.dataset.dealId);
+    });
+    return;
+  }
+  if (kind === 'closeLeadDeal'){
+    await guardForm(f, async () => {
+      if (!fd.deal) throw new Error('Select which deal is being closed as a sale.');
+      closeModal();
+      await closeLeadAsSale(f.dataset.leadId, f.dataset.targetStage, null, null, fd.deal);
     });
     return;
   }
